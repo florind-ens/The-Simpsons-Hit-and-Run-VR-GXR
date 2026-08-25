@@ -26,7 +26,7 @@ public:
     static CGprogram CompileShader(GLenum type, const char* source);
     static pglProgram* CreateProgram(CGprogram vertexShader, CGprogram fragmentShader);
 #else
-    void UseProgram() { glUseProgram(program); }
+    void UseProgram();
     static GLuint CompileShader(GLenum type, const char* source);
     static pglProgram* CreateProgram(GLuint vertexShader, GLuint fragmentShader);
 #endif
@@ -36,6 +36,13 @@ public:
     void SetTextureEnvironment(const pglTextureEnv* texEnv);
     void SetLightState(int handle, const pddiLight* lightState);
     void SetAmbientLight(pddiColour ambient);
+#if defined(RAD_ANDROID)
+    bool IsRequestedProgramActive() const;
+    void SetShadowState(bool enabled, GLuint texture, const pddiMatrix* matrix,
+                        float texelSize);
+    void SetCascadeShadowState(bool enabled,const GLuint* textures,
+                               const pddiMatrix* matrices,const float* texelSizes);
+#endif
 
     inline bool SupportsLighting() { return acs >= 0; }
     inline bool SupportsTextures() { return sampler >= 0; }
@@ -60,6 +67,12 @@ protected:
     bool LinkProgram(GLuint vertexShader, GLuint fragmentShader);
 
     GLuint program;
+#if defined(RAD_ANDROID)
+    GLuint multiviewProgram;
+    bool usingMultiviewProgram;
+    GLint vrProjection,vrViewAdjustment;
+    void RefreshUniformLocations();
+#endif
 
     // Uniform locations
     GLint projection, modelview, normalmatrix, alpharef, sampler;
@@ -70,6 +83,12 @@ protected:
     #ifdef RAD_ANDROID
     // Ubicación del uniform "lit" del vertex shader.
     GLint lit;
+    GLint vehiclePaint;
+    GLint enhancedSunDirection;
+    GLint vehicleDentCount, vehicleDents;
+    GLint vehicleRearLightMode,vehicleRearLightCount,vehicleRearLightPositions,vehicleRearLightDirections,vehicleRearLightColour;
+    GLint shadowEnabled, shadowTexture, shadowMatrix, shadowTexelSize;
+    GLint shadowTextureExtra[2],shadowMatrixExtra[2],shadowTexelSizeExtra[2];
     #endif
 #endif
 };

@@ -250,7 +250,14 @@ bool radMovieRenderStrategyBink::Render( void )
     // some camera settings
     p3d::pddi->PushState(PDDI_STATE_ALL);
     p3d::pddi->PushIdentityMatrix(PDDI_MATRIX_MODELVIEW);
-    #ifdef RAD_WIN32
+    #if defined(RAD_ANDROID)
+    // ProjectionMode is cached by PDDI. The previous GUI pass is commonly
+    // orthographic too, so assigning ORTHOGRAPHIC alone does not call
+    // SetupHardwareProjection after the movie-plane flag changes. Toggle the
+    // cached mode to guarantee that the spatial OpenXR matrix reaches GLES.
+    p3d::pddi->SetProjectionMode(PDDI_PROJECTION_DEVICE);
+    p3d::pddi->SetProjectionMode(PDDI_PROJECTION_ORTHOGRAPHIC);
+    #elif defined(RAD_WIN32)
     p3d::pddi->SetProjectionMode(PDDI_PROJECTION_DEVICE);
     #else
     p3d::pddi->SetProjectionMode(PDDI_PROJECTION_ORTHOGRAPHIC); //PDDI_PROJECTION_DEVICE
@@ -311,7 +318,23 @@ bool radMovieRenderStrategyBink::Render( void )
 
         #endif
 
-        #if defined RAD_WIN32
+        #if defined(RAD_ANDROID)
+
+        // The Android display is a legacy side-by-side surface, while each
+        // OpenXR eye is a separate portrait-shaped render target. Draw in
+        // normalized movie coordinates and fit the complete frame by width.
+        // Every tile uses its actual source position, preserving the image
+        // without cropping or stretching.
+        const float planeWidth=3.2f;
+        const float movieHeight = planeWidth*(float)m_MovieHeight/(float)m_MovieWidth;
+        float x = -planeWidth*0.5f + planeWidth*(float)m_pTile[tile].m_PosX/(float)m_MovieWidth;
+        float y = movieHeight*0.5f-
+                  planeWidth*(float)m_pTile[tile].m_PosY/(float)m_MovieWidth;
+        float z = 4.0f;
+        float dx = planeWidth*(float)m_pTile[tile].m_Width/(float)m_MovieWidth;
+        float dy = -planeWidth*(float)m_pTile[tile].m_Height/(float)m_MovieWidth;
+
+        #elif defined RAD_WIN32
 
         float x = ( float ) m_DisplayMultiplier * m_pTile[ tile ].m_PosX + m_MoviePosX;
         float y = ( float ) m_DisplayMultiplier * m_pTile[ tile ].m_PosY + m_MoviePosY;

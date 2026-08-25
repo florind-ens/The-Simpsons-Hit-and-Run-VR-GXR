@@ -38,11 +38,10 @@
 #include <camera/conversationcam.h>
 #include <camera/reversecam.h>
 #include <camera/snapshotcam.h>
+#include <camera/firstpersoncam.h>
 #ifdef RAD_PC
 #include <camera/pccam.h>
 #endif
-
-//#include <camera/firstpersoncam.h>
 
 #include <contexts/gameplay/gameplaycontext.h>
 #include <contexts/contextenum.h>
@@ -292,9 +291,9 @@ void GameplayContext::OnStart( ContextEnum previousContext )
             sc = new RelativeAnimatedCam();
             sc->SetAspect( aspect );
             scc->RegisterSuperCam( sc );
-//            sc = new FirstPersonCam();
-//            sc->SetAspect( aspect );
-//            scc->RegisterSuperCam( sc );
+            sc = new FirstPersonCam();
+            sc->SetAspect( aspect );
+            scc->RegisterSuperCam( sc );
 #ifdef RAD_PC
             sc = new PCCam();
             sc->SetAspect( aspect );

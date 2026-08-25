@@ -25,6 +25,7 @@
 #ifdef RAD_ANDROID
 #include <android/log.h>
 #include <unistd.h>
+#include <vr/openxrmanager.h>
 #endif
 
 #ifdef __SWITCH__
@@ -231,6 +232,11 @@ extern "C" int main( int argc, char *argv[] )
     // Terminate the game (this frees all resources allocated by the game).
     //
     pGame->Terminate();
+
+#ifdef RAD_ANDROID
+    // Destroy XR resources while the SDL EGL context is still current.
+    SharOpenXR::Shutdown();
+#endif
 
     //
     // Dump all the singletons.

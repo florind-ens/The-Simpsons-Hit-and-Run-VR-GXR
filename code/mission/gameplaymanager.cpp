@@ -80,6 +80,10 @@
 
 #include <camera/supercammanager.h>
 
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
+
 
 //******************************************************************************
 //
@@ -361,6 +365,26 @@ bool GameplayManager::TestPosInFrustrumOfPlayer( const rmt::Vector& pos, int pla
         pCam->SetFarPlane(250.0f);
     }
     bool r = pCam->SphereVisible(pos, radius);
+#if defined(RAD_ANDROID)
+    if( SharOpenXR::IsVrModeEnabled() )
+    {
+        // The legacy point-camera frustum is narrower than the union of the
+        // two OpenXR eyes and can also be one simulation frame behind the HMD.
+        // Traffic and pedestrians use this result to unload themselves, so a
+        // false negative becomes visible pop-out. Keep dynamic objects in a
+        // conservative safety volume around the actual tracked camera.
+        rmt::Matrix vrCamera;
+        if( SharOpenXR::GetLatestCullingCamera( &vrCamera ) )
+        {
+            const rmt::Vector delta=pos-vrCamera.Row(3);
+            const float vrSafetyRadius=100.0f+radius;
+            if( delta.MagnitudeSqr() <= vrSafetyRadius*vrSafetyRadius )
+            {
+                r=true;
+            }
+        }
+    }
+#endif
     pCam->SetFarPlane(oldFar);
     return r;
 }

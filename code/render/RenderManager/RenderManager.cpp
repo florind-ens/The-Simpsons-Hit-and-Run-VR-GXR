@@ -33,6 +33,10 @@
 #include <render/RenderManager/RenderLayer.h>
 #include <render/Culling/WorldScene.h>
 #include <render/RenderManager/RenderManager.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#include <p3d/camera.hpp>
+#endif
 #include <render/RenderManager/WorldRenderLayer.h>
 #include <render/RenderManager/FrontEndRenderLayer.h>
 #include <render/IntersectManager/IntersectManager.h>
@@ -79,6 +83,12 @@
 
 #include <presentation/presentation.h>
 #include <presentation/fmvplayer/fmvplayer.h>
+#include <gameflow/gameflow.h>
+#if defined(RAD_ANDROID)
+#include <presentation/gui/guisystem.h>
+#include <presentation/gui/guimanager.h>
+#include <presentation/gui/guiwindow.h>
+#endif
 
 #include <pddi/pddiext.hpp>
 #include <p3d/light.hpp>
@@ -563,7 +573,7 @@ void RenderManager::ContextUpdate( unsigned int iElapsedTime )
     
     for( int i=RenderEnums::numLayers-1; i>-1; i-- )
     {
-#ifdef DEBUGINFO_ENABLED
+#if defined(DEBUGINFO_ENABLED) && !defined(RAD_ANDROID)
         // We need to render the debug info just before we render the GUI layer
         //since rendering that layer changes the world matrix.
         if( i == RenderEnums::GUI )
@@ -593,13 +603,17 @@ void RenderManager::ContextUpdate( unsigned int iElapsedTime )
     END_PROFILE( "Dump Stats" );
 #endif 
 
+    #if !defined(RAD_ANDROID)
     RENDER_PROFILER();
+    #endif
 
     //MEMTRACK_RENDER();
 
     //HEAPSTACKS_RENDER();
 
+    #if !defined(RAD_ANDROID)
     SOUNDDEBUG_RENDER();
+    #endif
 
 #ifdef USE_BLUR
     ((pddiExtFramebufferEffects*)p3d::pddi->GetExtension( PDDI_EXT_FRAMEBUFFER_EFFECTS ))->EnableMotionBlur( mEnableMotionBlur || ENABLE_MOTION_BLUR, mBlurAlpha, BLUR_SCALE, false );
@@ -728,7 +742,9 @@ void RenderManager::ContextUpdate( unsigned int iElapsedTime )
     BEGIN_PROFILE("Rendering");
 
     BEGIN_PROFILE("Swap Buffers");
+#if !defined(RAD_ANDROID)
     p3d::context->SwapBuffers();
+#endif
     END_PROFILE("Swap Buffers");
 
 #if defined( RAD_XBOX ) || defined ( RAD_GAMECUBE ) || defined( RAD_WIN32 )
@@ -757,6 +773,21 @@ void RenderManager::ContextUpdate( unsigned int iElapsedTime )
         TransitionMoodLighting(iElapsedTime);
     }
 
+    bool xrFrame = false;
+#if defined(RAD_ANDROID)
+    static bool xrInitializationAttempted = false;
+    static bool xrAvailable = false;
+    if (!xrInitializationAttempted)
+    {
+        xrInitializationAttempted = true;
+        xrAvailable = SharOpenXR::Initialize();
+    }
+    if (xrAvailable)
+    {
+        xrFrame = SharOpenXR::BeginFrame();
+    }
+#endif
+
     BEGIN_PROFILE("Begin Frame");
     p3d::context->BeginFrame();
     END_PROFILE("Begin Frame");
@@ -775,9 +806,69 @@ void RenderManager::ContextUpdate( unsigned int iElapsedTime )
     }
 #endif
 
-    for (int i = RenderEnums::numLayers - 1; i > -1; i--)
+    unsigned int renderPasses = 1;
+#if defined(RAD_ANDROID)
+    bool multiviewActive=false;
+#endif
+#if defined(RAD_ANDROID)
+    const ContextEnum currentXrContext=GetGameFlow()->GetCurrentContext();
+    // Keep the spatial GUI anchor alive while a loading or pause screen is
+    // being rendered. Normal gameplay clears it so opening pause establishes
+    // a fresh panel directly in front of the player's current gaze.
+    if(currentXrContext!=CONTEXT_BOOTUP &&
+       currentXrContext!=CONTEXT_FRONTEND &&
+       currentXrContext!=CONTEXT_LOADING_DEMO &&
+       currentXrContext!=CONTEXT_LOADING_SUPERSPRINT &&
+       currentXrContext!=CONTEXT_LOADING_GAMEPLAY &&
+       currentXrContext!=CONTEXT_PAUSE)
     {
-#ifdef DEBUGINFO_ENABLED
+        SharOpenXR::SetFrontendPlaneActive(false);
+    }
+    if (xrFrame && SharOpenXR::GetEyeCount() == 2)
+    {
+        CGuiManager* currentGuiManager=GetGuiSystem()->GetCurrentManager();
+        const CGuiWindow::eGuiWindowID currentGuiScreen=currentGuiManager?
+            currentGuiManager->GetCurrentScreen():CGuiWindow::GUI_WINDOW_ID_UNDEFINED;
+        const CGuiWindow::eGuiWindowID nextGuiScreen=currentGuiManager?
+            currentGuiManager->GetNextScreen():CGuiWindow::GUI_WINDOW_ID_UNDEFINED;
+        // The GUI switches to a pause screen one update before GameFlow
+        // changes CONTEXT_GAMEPLAY to CONTEXT_PAUSE. Detect that transition
+        // here so its first frame is never submitted through the world-only
+        // multiview path (which produced a single white flash in the left eye).
+        const bool pauseGuiPending=GetGameFlow()->GetNextContext()==CONTEXT_PAUSE ||
+            currentGuiScreen==CGuiWindow::GUI_SCREEN_ID_PAUSE_SUNDAY ||
+            currentGuiScreen==CGuiWindow::GUI_SCREEN_ID_PAUSE_MISSION ||
+            nextGuiScreen==CGuiWindow::GUI_SCREEN_ID_PAUSE_SUNDAY ||
+            nextGuiScreen==CGuiWindow::GUI_SCREEN_ID_PAUSE_MISSION;
+        // Screen-space frontend/pause/loading layers contain eye-dependent
+        // convergence and anchoring that cannot be broadcast with the world
+        // draw. Keep those relatively cheap contexts on the proven per-eye
+        // path; gameplay geometry remains true single-pass multiview.
+        multiviewActive=currentXrContext==CONTEXT_GAMEPLAY && !pauseGuiPending &&
+                        SharOpenXR::BeginMultiview();
+        renderPasses=multiviewActive?1:2;
+    }
+#endif
+
+    for (unsigned int renderPass = 0; renderPass < renderPasses; ++renderPass)
+    {
+        bool eyeActive = false;
+#if defined(RAD_ANDROID)
+        eyeActive = (renderPasses == 2) && SharOpenXR::BeginEye(renderPass);
+        if (renderPasses == 2 && !eyeActive)
+            continue;
+#endif
+
+      for (int i = RenderEnums::numLayers - 1; i > -1; i--)
+      {
+#if defined(RAD_ANDROID)
+        // Legacy Scrooby shaders do not write both layers of a multiview
+        // framebuffer. Render the GUI separately into each eye after the
+        // single-pass world, while keeping its hand-attached groups cached.
+        if(multiviewActive && i==RenderEnums::GUI)
+            continue;
+#endif
+#if defined(DEBUGINFO_ENABLED) && !defined(RAD_ANDROID)
         if (i == RenderEnums::GUI)
         {
             DEBUGINFO_RENDER();
@@ -785,6 +876,18 @@ void RenderManager::ContextUpdate( unsigned int iElapsedTime )
 #endif
 
         RenderLayer *pLayer = mpRenderLayers[i];
+
+#if defined(RAD_ANDROID)
+        if (eyeActive || multiviewActive)
+        {
+            PresentationManager* xrPresentation = GetPresentationManager();
+            const bool xrMoviePlaying = xrPresentation &&
+                xrPresentation->GetFMVPlayer() &&
+                xrPresentation->GetFMVPlayer()->IsPlaying();
+            SharOpenXR::SetWorldRendering(
+                i >= RenderEnums::PresentationSlot && !xrMoviePlaying);
+        }
+#endif
 
         if (pLayer == NULL)
         {
@@ -795,11 +898,86 @@ void RenderManager::ContextUpdate( unsigned int iElapsedTime )
 
         if (ready)
         {
+#if defined(RAD_ANDROID)
+            rmt::Matrix originalCameras[MAX_PLAYERS];
+            bool changedCameras[MAX_PLAYERS] = { false };
+            if (eyeActive || multiviewActive)
+            {
+                for (unsigned int v = 0; v < pLayer->GetNumViews(); ++v)
+                {
+                    tCamera* camera = pLayer->pCam(v);
+                    if (camera)
+                    {
+                        originalCameras[v] = camera->GetCameraToWorldMatrix();
+                        rmt::Matrix eyeCamera;
+                        if(multiviewActive) SharOpenXR::PrepareMultiviewCamera(camera);
+                        if (SharOpenXR::GetEyeCamera(multiviewActive?0:renderPass, camera, &eyeCamera))
+                        {
+                            camera->SetCameraMatrix(&eyeCamera);
+                            changedCameras[v] = true;
+                        }
+                    }
+                }
+            }
+#endif
             BEGIN_PROFILE("Layers");
             pLayer->Render();
             END_PROFILE("Layers");
+#if defined(RAD_ANDROID)
+            if (eyeActive || multiviewActive)
+            {
+                for (unsigned int v = 0; v < pLayer->GetNumViews(); ++v)
+                    if (changedCameras[v] && pLayer->pCam(v))
+                        pLayer->pCam(v)->SetCameraMatrix(&originalCameras[v]);
+            }
+#endif
         }
+      }
+#if defined(RAD_ANDROID)
+        if(eyeActive)
+        {
+            PresentationManager* moviePresentation=GetPresentationManager();
+            FMVPlayer* moviePlayer=moviePresentation?moviePresentation->GetFMVPlayer():NULL;
+            // RenderCurrentVrEye checks the underlying decoder state. Do not
+            // use AnimationPlayer::IsPlaying here: Android FMV audio can be
+            // active while that wrapper reports false.
+            if(moviePlayer) moviePlayer->RenderCurrentVrEye();
+        }
+        if (eyeActive) SharOpenXR::EndEye(renderPass);
+#endif
     }
+#if defined(RAD_ANDROID)
+    if(multiviewActive)
+    {
+        RenderLayer* guiLayer=mpRenderLayers[RenderEnums::GUI];
+        if(guiLayer && guiLayer->IsRenderReady())
+        {
+            for(unsigned int guiEye=0;guiEye<2;++guiEye)
+            {
+                if(!SharOpenXR::BeginMultiviewGuiEye(guiEye)) continue;
+                rmt::Matrix originalGuiCameras[MAX_PLAYERS];
+                bool changedGuiCameras[MAX_PLAYERS]={false};
+                for(unsigned int view=0;view<guiLayer->GetNumViews();++view)
+                {
+                    tCamera* camera=guiLayer->pCam(view);
+                    if(!camera) continue;
+                    originalGuiCameras[view]=camera->GetCameraToWorldMatrix();
+                    rmt::Matrix eyeCamera;
+                    if(SharOpenXR::GetEyeCamera(guiEye,camera,&eyeCamera))
+                    {
+                        camera->SetCameraMatrix(&eyeCamera);
+                        changedGuiCameras[view]=true;
+                    }
+                }
+                guiLayer->Render();
+                for(unsigned int view=0;view<guiLayer->GetNumViews();++view)
+                    if(changedGuiCameras[view] && guiLayer->pCam(view))
+                        guiLayer->pCam(view)->SetCameraMatrix(&originalGuiCameras[view]);
+            }
+        }
+        SharOpenXR::EndMultiview();
+    }
+#endif
 
     END_PROFILE("Rendering");
 
@@ -814,9 +992,10 @@ void RenderManager::ContextUpdate( unsigned int iElapsedTime )
     END_PROFILE("Dump Stats");
 #endif
 
+    #if !defined(RAD_ANDROID)
     RENDER_PROFILER();
-
     SOUNDDEBUG_RENDER();
+    #endif
 
 #ifdef USE_BLUR
     ((pddiExtFramebufferEffects*)p3d::pddi->GetExtension(PDDI_EXT_FRAMEBUFFER_EFFECTS))->EnableMotionBlur(
@@ -868,16 +1047,11 @@ void RenderManager::ContextUpdate( unsigned int iElapsedTime )
         GetGame()->SetTime(time);
     }
 
-    #if defined(RAD_ANDROID)
-        /*
-        Dibujamos aqui porque este rendermanager dibuja por encima de las cinematicas
-        Idea feliz quizas desde aqui podamos dibujar y forzar barras negras para las cinematicas, ya que en algunos moviles estaban bug
-        Brutaaal esta idea habra que probar luego
-        El resto de iconos los dibujamos con FrontEndRenderLayer porque esa capa es la encargada de dibujar el propio HUD del juego
-        */
-        TouchHudRenderer::GetInstance().RenderCinematicSkip();
-    #endif
+    // No touch-control overlay in standalone VR.
     p3d::context->EndFrame(false);
+#if defined(RAD_ANDROID)
+    if (xrFrame) SharOpenXR::EndFrame();
+#endif
 
 #ifdef DEBUGWATCH
     mDebugRenderTime = radTimeGetMicroseconds() - t0;

@@ -30,6 +30,9 @@
 #include <presentation/gui/guisystem.h>
 #include <presentation/gui/guiwindow.h>
 #include <interiors/interiormanager.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 
 //========================================
 // Definitions
@@ -101,6 +104,9 @@ void AnimatedCam::Abort()
 //==============================================================================
 AnimatedCam::AnimatedCam():
     m_NextCameraType( INVALID )
+#if defined(RAD_ANDROID)
+    ,mVrSmoothingValid( false )
+#endif
 {
     ++g_InstanceCount;
 }
@@ -400,6 +406,9 @@ void AnimatedCam::LookupMulticontroller()
 //=============================================================================
 void AnimatedCam::OnInit()
 {
+#if defined(RAD_ANDROID)
+    mVrSmoothingValid=false;
+#endif
     LetterBoxStart();
     InitMyController();
     InputManager::GetInstance()->SetGameState( Input::ACTIVE_ANIM_CAM );
@@ -706,6 +715,29 @@ void AnimatedCam::Update( unsigned int milliseconds )
 
             target *= 10.0f;
             target += position;
+#if defined(RAD_ANDROID)
+            if( SharOpenXR::IsVrModeEnabled() )
+            {
+                // Some authored camera tracks contain 30 Hz stepped keys.
+                // Continue converging on those keys every 90 Hz game frame so
+                // the base fly-through does not visibly jump in the headset.
+                if(!mVrSmoothingValid)
+                {
+                    mVrSmoothedPosition=position;
+                    mVrSmoothedTarget=target;
+                    mVrSmoothingValid=true;
+                }
+                else
+                {
+                    const float alpha=static_cast<float>(milliseconds)/
+                                      (static_cast<float>(milliseconds)+18.0f);
+                    mVrSmoothedPosition+=(position-mVrSmoothedPosition)*alpha;
+                    mVrSmoothedTarget+=(target-mVrSmoothedTarget)*alpha;
+                }
+                position=mVrSmoothedPosition;
+                target=mVrSmoothedTarget;
+            }
+#endif
             SetCameraValues( milliseconds, position, target);
         }
     }

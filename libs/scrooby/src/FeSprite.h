@@ -47,6 +47,8 @@ virtual public Scrooby::Sprite
 private:
     typedef FeBoundedDrawable Parent;
 public:
+    void CopyImagesFrom( const FeSprite& source );
+    void ReplaceImagesFrom( const FeSprite& source );
 
     FeSprite( const tName& name, int x, int y );
      

@@ -27,6 +27,7 @@
 #include <Group.h>
 #include <Sprite.h>
 #include <Text.h>
+#include <Pure3dObject.h>
 
 #include <string.h>
 
@@ -393,7 +394,9 @@ void CGuiScreenSound::HandleMessage
             }
             case GUI_MSG_CONTROLLER_BACK:
             {
+#ifndef RAD_ANDROID
                 this->StartTransitionAnimation( 690, 720 );
+#endif
 
                 break;
             }
@@ -430,6 +433,15 @@ void CGuiScreenSound::HandleMessage
 //===========================================================================
 void CGuiScreenSound::InitIntro()
 {
+#ifdef RAD_ANDROID
+    // Frontend menu transitions move the authored 3D camera.  In VR the
+    // frontend panel is head-relative, so even one residual controller frame
+    // makes the world jump away and the menu disappear briefly.
+    if( m_p3dObject != NULL )
+    {
+        m_p3dObject->SetMultiController( NULL );
+    }
+#endif
     // Set slider values to current volume settings
     //
     GuiMenuItem* menuItem = NULL;

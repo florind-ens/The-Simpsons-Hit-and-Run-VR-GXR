@@ -18,6 +18,11 @@
 #include <presentation/gui/guiscreen.h>
 
 #include <worldsim/coins/coinmanager.h>
+#ifdef RAD_ANDROID
+#include <vr/openxrmanager.h>
+namespace Scrooby { class Group; }
+void ScroobySetVrMissionHudGroup(unsigned slot,Scrooby::Group* group);
+#endif
 
 // Scrooby
 #include <App.h>
@@ -52,6 +57,9 @@ HudCoinCollected::HudCoinCollected( Scrooby::Page* pPage )
 
     m_itemsCount = pPage->GetGroup( "ItemsCount" );
     rAssert( m_itemsCount != NULL );
+#ifdef RAD_ANDROID
+    ScroobySetVrMissionHudGroup( 3, m_itemsCount );
+#endif
 
     m_numCoins = m_itemsCount->GetSprite( "ItemsCount" );
     rAssert( m_numCoins != NULL );
@@ -113,7 +121,11 @@ HudCoinCollected::Start()
         //
         rAssert( m_itemsCount != NULL );
         m_itemsCount->ResetTransformation();
-        m_itemsCount->SetAlpha( 0.0f );
+        m_itemsCount->SetAlpha(
+#ifdef RAD_ANDROID
+            SharOpenXR::IsSpatialHudEnabled() ? 1.0f :
+#endif
+            0.0f );
 
         rAssert( m_itemsComplete != NULL );
         m_itemsComplete->SetVisible( false );
@@ -153,6 +165,17 @@ HudCoinCollected::Update( float elapsedTime )
                 const float COIN_TRANSITION_IN_TIME = 200.0f;
 
                 rAssert( m_itemsCount != NULL );
+
+#ifdef RAD_ANDROID
+                if( SharOpenXR::IsSpatialHudEnabled() )
+                {
+                    m_itemsCount->ResetTransformation();
+                    m_itemsCount->SetAlpha( 1.0f );
+                    m_elapsedTime = 0.0f;
+                    m_currentSubState++;
+                    break;
+                }
+#endif
 
                 if( m_elapsedTime < COIN_TRANSITION_IN_TIME )
                 {
@@ -259,6 +282,15 @@ HudCoinCollected::Update( float elapsedTime )
             {
                 const float COIN_TRANSITION_OUT_TIME = 200.0f;
 
+#ifdef RAD_ANDROID
+                if( SharOpenXR::IsSpatialHudEnabled() )
+                {
+                    m_itemsCount->ResetTransformation();
+                    m_currentSubState = NUM_SUB_STATES;
+                    m_elapsedTime = 0.0f;
+                    break;
+                }
+#endif
                 if( m_elapsedTime < COIN_TRANSITION_OUT_TIME )
                 {
                     float percentageDone = m_elapsedTime / COIN_TRANSITION_OUT_TIME;

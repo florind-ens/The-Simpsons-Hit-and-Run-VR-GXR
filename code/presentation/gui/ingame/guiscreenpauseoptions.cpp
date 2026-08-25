@@ -37,14 +37,16 @@
 
 enum ePauseMenuItem
 {
-#ifdef RAD_PC
+#if defined(RAD_PC) || defined(RAD_ANDROID)
     MENU_ITEM_DISPLAY,
 #endif
     MENU_ITEM_CONTROLLER,
     MENU_ITEM_SOUND,
 
 
+#if !defined(RAD_ANDROID)
     MENU_ITEM_SETTINGS,
+#endif
 //    MENU_ITEM_CAMERA,
 
     NUM_PAUSE_MENU_ITEMS
@@ -53,14 +55,16 @@ enum ePauseMenuItem
 
 static const char* PAUSE_MENU_ITEMS[] =
 {
-#ifdef RAD_PC
+#if defined(RAD_PC) || defined(RAD_ANDROID)
     "Display",
 #endif
     "Controller",
     "Sound",
 
 //#ifndef RAD_ANDROID // reestablecemos configuración
+#if !defined(RAD_ANDROID)
     "Settings",
+#endif
 //#endif
 //    "Camera",
 
@@ -127,9 +131,37 @@ MEMTRACK_PUSH_GROUP( "CGUIScreenPauseOptions" );
                               pRArrow );
     }
 
+#ifdef RAD_ANDROID
+    // The Android project does not instantiate the controller-options screen.
+    // Reuse its otherwise hidden top-level row as the entry to VR settings.
+    Scrooby::Text* vrEntry = menu->GetText( "Controller" );
+    if( vrEntry != NULL )
+    {
+        vrEntry->SetString( 0, "VR" );
+    }
+
+    Scrooby::Text* graphicsEntry = menu->GetText( "Display" );
+    if( graphicsEntry != NULL )
+    {
+        graphicsEntry->SetString( 0, "Graphics" );
+    }
+
+    // Settings is not part of the Android pause menu.  The Scrooby object is
+    // still authored in the shared page, so hiding it from CGuiMenu alone is
+    // insufficient.
+    Scrooby::Text* settingsEntry = menu->GetText( "Settings" );
+    if( settingsEntry != NULL ) settingsEntry->SetVisible( false );
+    Scrooby::Text* settingsValue = pPage->GetText( "Settings_Value" );
+    if( settingsValue != NULL ) settingsValue->SetVisible( false );
+    Scrooby::Sprite* settingsLeft = pPage->GetSprite( "Settings_LArrow" );
+    if( settingsLeft != NULL ) settingsLeft->SetVisible( false );
+    Scrooby::Sprite* settingsRight = pPage->GetSprite( "Settings_RArrow" );
+    if( settingsRight != NULL ) settingsRight->SetVisible( false );
+#endif
+
     
 
-#ifndef RAD_PC
+#if !defined(RAD_PC) && !defined(RAD_ANDROID)
     Scrooby::Text* pText = menu->GetText( "Display" );
     if( pText )
         pText->SetVisible( false );
@@ -142,7 +174,7 @@ MEMTRACK_PUSH_GROUP( "CGUIScreenPauseOptions" );
 
     // TC: [TEMP] disable controller screen for now to free up some memory for HUD map
     //
-#ifndef RAD_PC
+#if !defined(RAD_PC) && !defined(RAD_ANDROID)
     m_pMenu->SetMenuItemEnabled( MENU_ITEM_CONTROLLER, false, true );
 #endif
 
@@ -226,19 +258,25 @@ void CGuiScreenPauseOptions::HandleMessage
             {
                 if( param1 == MENU_ITEM_CONTROLLER )
                 {
+#ifdef RAD_ANDROID
+                    m_pParent->HandleMessage( GUI_MSG_GOTO_SCREEN, GUI_SCREEN_ID_VR );
+#else
                     m_pParent->HandleMessage( GUI_MSG_GOTO_SCREEN, GUI_SCREEN_ID_CONTROLLER );
+#endif
                 }
                 else if( param1 == MENU_ITEM_SOUND )
                 {
                     m_pParent->HandleMessage( GUI_MSG_GOTO_SCREEN, GUI_SCREEN_ID_SOUND );
                 }
                 
+#if !defined(RAD_ANDROID)
                 else if( param1 == MENU_ITEM_SETTINGS )
                 {
                      m_pParent->HandleMessage( GUI_MSG_GOTO_SCREEN, GUI_SCREEN_ID_SETTINGS );
                 }
+#endif
             
-#ifdef RAD_PC
+#if defined(RAD_PC) || defined(RAD_ANDROID)
                 else if( param1 == MENU_ITEM_DISPLAY )
                 {
                     m_pParent->HandleMessage( GUI_MSG_GOTO_SCREEN, GUI_SCREEN_ID_DISPLAY );

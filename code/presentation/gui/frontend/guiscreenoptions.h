@@ -57,7 +57,7 @@ private:
 
     enum eMenuItem
     {
-#ifdef RAD_PC
+#if defined(RAD_PC) || defined(RAD_ANDROID)
         MENU_ITEM_DISPLAY,
 #endif
         MENU_ITEM_CONTROLLER,

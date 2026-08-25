@@ -123,6 +123,18 @@ const ControlMap FMV_CONTROL_MAP[] =
     { "feSelect",        FMVInput::Skip },
 #endif // RAD_PC
 
+#ifdef RAD_ANDROID
+    // Quest actions are exposed through the legacy virtual-controller names.
+    // Keep axes out of this list so stick drift cannot accidentally skip FMVs.
+    { "A",               FMVInput::Skip },
+    { "B",               FMVInput::Skip },
+    { "X",               FMVInput::Skip },
+    { "Y",               FMVInput::Skip },
+    { "Start",           FMVInput::Start },
+    { "LeftTrigger",     FMVInput::Skip },
+    { "RightTrigger",    FMVInput::Skip },
+#endif
+
     { "",               FMVInput::UNKNOWN }
 };
 
@@ -275,12 +287,17 @@ void FMVUserInputHandler::OnButtonDown( int controllerId, int buttonId, const IB
     if (buttonId==FMVInput::Start) // start also skip
         button_skip = true;
 
-    else if( m_isEnabled && button_skip )
+    if( m_isEnabled && button_skip )
     {
-        if( GetPresentationManager()->GetFMVPlayer()->IsPlaying() &&
-            GetPresentationManager()->GetFMVPlayer()->GetElapsedTime() > MIN_MOVIE_TIME )
+        FMVPlayer* player=GetPresentationManager()->GetFMVPlayer();
+#if defined(RAD_ANDROID)
+        const bool movieActive=player && player->IsDecoderPlaying();
+#else
+        const bool movieActive=player && player->IsPlaying();
+#endif
+        if( movieActive && player->GetElapsedTime() > MIN_MOVIE_TIME )
         {
-            GetPresentationManager()->GetFMVPlayer()->Abort();
+            player->Abort();
         }
     }
 }

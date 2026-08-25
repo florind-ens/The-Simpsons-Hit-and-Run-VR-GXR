@@ -25,6 +25,7 @@
 // Forward References
 //===========================================================================
 class CGuiMenu;
+namespace Scrooby { class Text; }
 
 //===========================================================================
 // Interface Definitions
@@ -52,17 +53,30 @@ private:
 private:
     enum eMenuItem
     {
+#ifdef RAD_ANDROID
+        MENU_ITEM_CSM,
+        MENU_ITEM_ENHANCED_MATERIALS,
+        MENU_ITEM_VEHICLE_LIGHTS,
+        MENU_ITEM_REFRESH_RATE,
+        MENU_ITEM_RENDER_SCALE,
+#else
         MENU_ITEM_RESOLUTION,
         MENU_ITEM_COLOUR_DEPTH,
         MENU_ITEM_DISPLAY_MODE,
         MENU_ITEM_GAMMA,
         MENU_ITEM_APPLY_CHANGES,
+#endif
 
         NUM_MENU_ITEMS
     };
 
     CGuiMenu* m_pMenu;
     bool      m_changedGamma;
+#ifdef RAD_ANDROID
+    Scrooby::Text* m_pRenderScaleLabel;
+    Scrooby::Text* m_pRefreshRateLabel;
+    void UpdateVrDisplayLabels();
+#endif
 };
 
 #endif // GUISCREENDISPLAY_H

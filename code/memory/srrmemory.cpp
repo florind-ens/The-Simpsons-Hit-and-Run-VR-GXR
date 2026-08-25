@@ -840,7 +840,15 @@ void HeapManager::DestroyInstance()
         }
 
         s_Instance->Release();
+        // Android may recreate SDLActivity without unloading libmain.so.
+        // Leaving this pointer non-null makes the next SDL_main invocation
+        // call GetValue() through released TLS storage and crash during
+        // foundation/platform startup. Treat shutdown as a complete reset so
+        // GetInstance() creates fresh thread-local storage on the next run.
+        s_Instance = NULL;
     }
+
+    g_HeapManagerCreated = false;
 }
 
 

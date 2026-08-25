@@ -32,6 +32,7 @@ class AnimEntityDSG;
 class tGeometry;
 class tPointCamera;
 class tShader;
+class Vehicle;
 //class SpatialTreeIter;
 
 /////////////////////////////////////////////////////////////////////////
@@ -84,8 +85,12 @@ public:
    void RenderOpaque( void );
    void RenderTranslucent( void );
    void RenderShadows();
-   void RenderSimpleShadows( void );
+   void RenderSimpleShadows( bool charactersOnly = false,
+                             Vehicle* excludedVehicle = NULL );
    void RenderShadowCasters();
+   void RenderCsmCasters(bool includeStatic,bool includeDynamic,
+                         const rmt::Matrix& lightWorldToCamera,
+                         float halfWidth,float halfDepth);
    
    ////////////////////////////////////////////////////////////
    // Public Tree Masks
@@ -157,6 +162,7 @@ protected:
 
    tShader* mpTempShader;
    std::vector< IEntityDSG*, s2alloc<IEntityDSG*> > mpZSortsPassShadowCasters;
+   std::vector< IEntityDSG*, s2alloc<IEntityDSG*> > mCsmDynamicCasters;
    std::vector< zSortBlah, s2alloc<zSortBlah> > mpZSorts;
    std::vector< IEntityDSG*, s2alloc<IEntityDSG*> > mpZSortsPass2;
    ReserveArray<IEntityDSG*> mShadowCastersPass1;      

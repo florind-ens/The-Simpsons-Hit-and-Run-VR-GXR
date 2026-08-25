@@ -54,6 +54,7 @@ ActorManager* ActorManager::GetInstance()
 void ActorManager::DestroyInstance()
 {
     delete sp_Instance;
+    sp_Instance = 0;
 }
 
 ActorManager::ActorManager()

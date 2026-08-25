@@ -12,6 +12,46 @@
 #include <microprofile.h>
 #include <SDL.h>
 
+#if defined(RAD_ANDROID)
+static int gEnhancedMaterialMode=0;
+static bool gParticleRendering=false;
+static float gEnhancedSunDirection[3]={0.39f,0.87f,-0.26f};
+static float gVehicleDeformation[16]={0.0f};
+static int gVehicleDeformationCount=0;
+static int gVehicleRearLightMode=0;
+static int gVehicleRearLightCount=0;
+static float gVehicleRearLightPositions[24]={0.0f};
+static float gVehicleRearLightDirections[24]={0.0f};
+static float gVehicleRearLightColour[3]={1.0f,0.04f,0.02f};
+void pglSetEnhancedMaterialMode(int mode) { gEnhancedMaterialMode=mode; }
+int pglGetEnhancedMaterialMode() { return gEnhancedMaterialMode; }
+void pglSetParticleRendering(bool enabled) { gParticleRendering=enabled; }
+bool pglIsParticleRendering() { return gParticleRendering; }
+void pglSetEnhancedSunDirection(float x,float y,float z)
+{ gEnhancedSunDirection[0]=x; gEnhancedSunDirection[1]=y; gEnhancedSunDirection[2]=z; }
+const float* pglGetEnhancedSunDirection() { return gEnhancedSunDirection; }
+void pglSetVehicleDeformation(const float* dents,int count)
+{
+    gVehicleDeformationCount=rmt::Clamp(count,0,4);
+    for(int i=0;i<16;++i) gVehicleDeformation[i]=(dents && i<gVehicleDeformationCount*4)?dents[i]:0.0f;
+}
+const float* pglGetVehicleDeformation() { return gVehicleDeformation; }
+int pglGetVehicleDeformationCount() { return gVehicleDeformationCount; }
+void pglSetVehicleRearLights(int mode,int count,const float* positions,const float* directions,const float* colour)
+{
+    gVehicleRearLightMode=rmt::Clamp(mode,0,2);
+    gVehicleRearLightCount=rmt::Clamp(count,0,8);
+    for(int i=0;i<24;++i) gVehicleRearLightPositions[i]=positions?positions[i]:0.0f;
+    for(int i=0;i<24;++i) gVehicleRearLightDirections[i]=directions?directions[i]:0.0f;
+    for(int i=0;i<3;++i) gVehicleRearLightColour[i]=colour?colour[i]:0.0f;
+}
+int pglGetVehicleRearLightMode(){ return gVehicleRearLightMode; }
+int pglGetVehicleRearLightCount(){ return gVehicleRearLightCount; }
+const float* pglGetVehicleRearLightPositions(){ return gVehicleRearLightPositions; }
+const float* pglGetVehicleRearLightDirections(){ return gVehicleRearLightDirections; }
+const float* pglGetVehicleRearLightColour(){ return gVehicleRearLightColour; }
+#endif
+
 pddiShadeColourTable pglMat::colourTable[] = 
 {
     {PDDI_SP_AMBIENT  , SHADE_COLOUR(&pglMat::SetAmbient)},
@@ -57,14 +97,13 @@ GLenum filterMagTable[5] =
     GL_LINEAR
 };
 
-// GL_NEAREST_MIPMAP_LINEAR not used
 GLenum filterMinTable[5] =
 {
     GL_NEAREST,
     GL_LINEAR,
-    GL_NEAREST,//GL_NEAREST_MIPMAP_NEAREST,
-    GL_LINEAR,//GL_LINEAR_MIPMAP_NEAREST,
-    GL_LINEAR,//GL_LINEAR_MIPMAP_LINEAR
+    GL_NEAREST_MIPMAP_NEAREST,
+    GL_LINEAR_MIPMAP_NEAREST,
+    GL_LINEAR_MIPMAP_LINEAR
 };
 
 GLenum uvTable[3] =
@@ -261,12 +300,42 @@ void pglMat::SetDevPass(unsigned pass)
 
     if(texEnv[i].texture)
     {
+#if defined(RAD_ANDROID)
+        // Unit 1 is reserved for the sun shadow map.
+        glActiveTexture(GL_TEXTURE0);
+#endif
         texEnv[i].texture->SetGLState();
 
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filterMagTable[texEnv[i].filterMode]);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filterMinTable[texEnv[i].filterMode]);
+        const bool hasMipmaps=texEnv[i].texture->GetNumMipMaps()>0;
+        const bool wantsMipmaps=texEnv[i].filterMode>=PDDI_FILTER_MIPMAP;
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,
+            hasMipmaps && wantsMipmaps ? filterMinTable[texEnv[i].filterMode] :
+            filterMinTable[texEnv[i].filterMode==PDDI_FILTER_NONE ? PDDI_FILTER_NONE : PDDI_FILTER_BILINEAR]);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, uvTable[texEnv[i].uvMode]);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, uvTable[texEnv[i].uvMode]);
+
+#if defined(RAD_ANDROID)
+        // Quest exposes EXT_texture_filter_anisotropic. Limit it to 8x: this
+        // greatly improves roads and ground viewed at grazing angles without
+        // the bandwidth cost of blindly requesting the hardware maximum.
+        static bool anisotropyChecked=false;
+        static float anisotropy=1.0f;
+        if(!anisotropyChecked)
+        {
+            const char* extensions=reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+            if(extensions && strstr(extensions,"GL_EXT_texture_filter_anisotropic"))
+            {
+                float maximum=1.0f;
+                glGetFloatv(0x84FF,&maximum); // GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT
+                anisotropy=rmt::Min(8.0f,maximum);
+                SDL_Log("GLES: texture anisotropy enabled at %.1fx",anisotropy);
+            }
+            anisotropyChecked=true;
+        }
+        glTexParameterf(GL_TEXTURE_2D,0x84FE,
+            hasMipmaps && wantsMipmaps ? anisotropy : 1.0f); // GL_TEXTURE_MAX_ANISOTROPY_EXT
+#endif
     }
 
     if(texEnv[i].alphaBlendMode == PDDI_BLEND_NONE)

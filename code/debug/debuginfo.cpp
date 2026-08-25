@@ -211,6 +211,7 @@ void DebugInfo::CreateNewSection( const char* section )
 void DebugInfo::DestroyInstance()
 {
     delete(GMA_DEBUG, _Instance);
+    _Instance = NULL;
 }
 
 

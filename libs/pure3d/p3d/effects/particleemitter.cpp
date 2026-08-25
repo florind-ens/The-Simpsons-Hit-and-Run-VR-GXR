@@ -21,6 +21,10 @@
 #include <p3d/effects/particleloader.hpp>
 #include <pddi/pddiext.hpp>
 #include <float.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+void pglSetParticleRendering(bool enabled);
+#endif
 
 //*****************************************************************************
 //
@@ -666,6 +670,7 @@ void tBaseEmitter::UpdateEmitterAttributes()
         dragChannel[0]->GetValue(frame,&currDrag);
         currDrag *= dragBias;
     }
+
 }
 
 //*****************************************************************************
@@ -789,6 +794,9 @@ void tSpriteEmitter::Display()
             }
         }
 
+#if defined(RAD_ANDROID)
+        pglSetParticleRendering(true);
+#endif
         pddiPrimStream* stream = p3d::pddi->BeginPrims(shader->GetShader(), PDDI_PRIM_TRIANGLES, PDDI_V_CT, 6 * numLiveParticles);
 
         for (int i = 0; i < numLiveParticles; i++)
@@ -832,6 +840,9 @@ void tSpriteEmitter::Display()
             stream->Coord(currPos.x-x, currPos.y-y, currPos.z);
         }
         p3d::pddi->EndPrims(stream);
+#if defined(RAD_ANDROID)
+        pglSetParticleRendering(false);
+#endif
 
         p3d::stack->Pop();    
 

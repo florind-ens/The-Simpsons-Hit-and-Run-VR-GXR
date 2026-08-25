@@ -64,6 +64,11 @@ public:
 
     // IRadMovieRenderLoop interface, called by radMovie service eac time a frame is ready
     void IterateLoop( IRadMoviePlayer2* pIRadMoviePlayer );
+#if defined(RAD_ANDROID)
+    // Draw the already decoded texture into the currently bound OpenXR eye.
+    void RenderCurrentVrEye();
+    bool IsDecoderPlaying();
+#endif
 
     // reset all internal data
     virtual void ClearData();

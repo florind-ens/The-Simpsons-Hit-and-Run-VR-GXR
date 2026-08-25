@@ -35,6 +35,7 @@ public:
     ~CharacterRenderable( void );
 
 	void Display( rmt::Vector iPosn, tPose* pose );
+    void DisplayCsmModel( tPose* pose ) { DisplayModel(pose); }
     
     enum CharacterLOD
     {

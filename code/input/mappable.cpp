@@ -42,7 +42,11 @@ void Mappable::DispatchOnButton( int controllerId, int id, const Button* pButton
         bool bWasButtonDown = IsButtonDown( destButtonID );
         bool duplicate = mButton[ destButtonID ].TimeSinceChange() == 0;
 
-        if(!duplicate || (duplicate && ( pButton->GetValue( ) >= mButton[ destButtonID].GetValue( ) )))
+        // A release must always win. Virtual/OpenXR input can press and
+        // release within one legacy input tick; treating zero as a duplicate
+        // used to discard the release and latch sticks/buttons indefinitely.
+        if(0.0f == pButton->GetValue() || !duplicate ||
+           (duplicate && (pButton->GetValue() >= mButton[destButtonID].GetValue())))
         {
 		    UpdateButtonState( controllerId, destButtonID, pButton );
 

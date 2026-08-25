@@ -4,6 +4,9 @@
 #include <p3d/camera.hpp>
 
 #include <input/inputmanager.h>
+#ifdef RAD_ANDROID
+#include <vr/openxrmanager.h>
+#endif
 #ifdef RAD_PC
 #include <input/usercontrollerWin32.h>
 #endif
@@ -116,10 +119,29 @@ void CharacterMappable::LoadControllerMappings( unsigned int controllerId )
     Map( "DPadDown", CharacterController::DPadDown, 0, controllerId );
     Map( "DPadLeft", CharacterController::DPadLeft, 0, controllerId );
     Map( "DPadRight", CharacterController::DPadRight, 0, controllerId );
-    Map( "Y", CharacterController::DoAction, 0, controllerId );
-    Map( "A", CharacterController::Jump, 0, controllerId );
-    Map( "B", CharacterController::Dash, 0, controllerId );
-    Map( "X", CharacterController::Attack, 0, controllerId );
+#ifdef RAD_ANDROID
+    if( SharOpenXR::IsVrModeEnabled() )
+    {
+        // Quest VR gameplay layout. Front-end A/B mappings remain untouched.
+        Map( "A", CharacterController::DoAction, 0, controllerId );
+        Map( "Y", CharacterController::DoAction, 0, controllerId );
+        Map( "B", CharacterController::Jump, 0, controllerId );
+        Map( "LeftThumb", CharacterController::Dash, 0, controllerId );
+        // Physical attacks are handled by tracked-hand strikes in VR.
+    }
+    else
+#endif
+    {
+        Map( "Y", CharacterController::DoAction, 0, controllerId );
+        Map( "A", CharacterController::Jump, 0, controllerId );
+#ifdef RAD_ANDROID
+        // In Original mode the Quest right trigger is also the on-foot jump
+        // control. VehicleMappable independently keeps it mapped to gas.
+        Map( "RightTrigger", CharacterController::Jump, 0, controllerId );
+#endif
+        Map( "B", CharacterController::Dash, 0, controllerId );
+        Map( "X", CharacterController::Attack, 0, controllerId );
+    }
 #endif
 #ifdef RAD_PS2
 	ClearMap( 0 );

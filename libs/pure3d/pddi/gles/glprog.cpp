@@ -5,10 +5,15 @@
 #include <pddi/gles/gl.hpp>
 #include <pddi/gles/glprog.hpp>
 #include <pddi/gles/glmat.hpp>
+#include <pddi/gles/gltex.hpp>
 
 #include <string>
+#include <map>
 #include <vector>
 #include <SDL.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 
 #ifdef RAD_CG
 #define CGGL_NO_OPENGL
@@ -45,6 +50,46 @@ static inline void UniformColour(GLint loc, pddiColour c)
 }
 #endif
 
+#if defined(RAD_ANDROID) && !defined(RAD_CG)
+namespace
+{
+struct ShaderSource { GLenum type; std::string text; };
+static std::map<GLuint,ShaderSource> sShaderSources;
+static bool sMultiviewProgramFailure=false;
+static void ReplaceAll(std::string& s,const std::string& from,const std::string& to)
+{ for(size_t p=0;(p=s.find(from,p))!=std::string::npos;p+=to.size()) s.replace(p,from.size(),to); }
+static std::string MakeMultiviewShader(GLenum type,const std::string& legacy)
+{
+    std::string s="#version 320 es\n";
+    if(type==GL_VERTEX_SHADER) s+="#extension GL_OVR_multiview2 : require\n";
+    s+="precision highp float;\nprecision highp int;\n";
+    if(type==GL_VERTEX_SHADER) s+="layout(num_views=2) in;\n";
+    else s+="layout(location=0) out vec4 pglFragColor;\n";
+    s+=legacy; ReplaceAll(s,"attribute ","in "); ReplaceAll(s,"texture2D(","texture(");
+    if(type==GL_VERTEX_SHADER)
+    {
+        ReplaceAll(s,"varying ","out ");
+        ReplaceAll(s,"uniform mat4 projection;","uniform mat4 projection; uniform mat4 vrProjection[2]; uniform mat4 vrViewAdjustment[2];");
+        const std::string p="vrProjection[gl_ViewID_OVR]*vrViewAdjustment[gl_ViewID_OVR]*";
+        ReplaceAll(s,"projection * V",p+"V"); ReplaceAll(s,"projection*V",p+"V");
+        ReplaceAll(s,"projection * v",p+"v"); ReplaceAll(s,"projection*v",p+"v");
+        ReplaceAll(s,"projection * modelview",p+"modelview"); ReplaceAll(s,"projection*modelview",p+"modelview");
+    }
+    else { ReplaceAll(s,"varying ","in "); ReplaceAll(s,"gl_FragColor","pglFragColor"); }
+    return s;
+}
+static GLuint CompileMultiviewShader(GLenum type,const std::string& legacy)
+{
+    const std::string source=MakeMultiviewShader(type,legacy); const char* text=source.c_str();
+    GLuint shader=glCreateShader(type); glShaderSource(shader,1,&text,0); glCompileShader(shader);
+    GLint ok=0; glGetShaderiv(shader,GL_COMPILE_STATUS,&ok); if(ok)return shader;
+    GLint n=0;glGetShaderiv(shader,GL_INFO_LOG_LENGTH,&n);std::vector<GLchar> log(n>0?n:1);glGetShaderInfoLog(shader,n,&n,log.data());
+    SDL_Log("Multiview shader compilation error: %s",log.data());glDeleteShader(shader);return 0;
+}
+}
+bool pglAreMultiviewProgramsReady(){return !sMultiviewProgramFailure;}
+#endif
+
 pglProgram::pglProgram()
 {
 #ifdef RAD_CG
@@ -52,10 +97,23 @@ pglProgram::pglProgram()
     projection = modelview = normalmatrix = alpharef = sampler = acs = nullptr;
 #else
     program = 0;
+#ifdef RAD_ANDROID
+    multiviewProgram=0;
+    usingMultiviewProgram=false;
+    vrProjection=vrViewAdjustment=-1;
+#endif
     projection = modelview = normalmatrix = alpharef = sampler = acs = -1;
 
     #ifdef RAD_ANDROID
     lit = -1;
+    vehiclePaint = -1;
+    enhancedSunDirection = -1;
+    vehicleDentCount=vehicleDents=-1;
+    vehicleRearLightMode=vehicleRearLightCount=vehicleRearLightPositions=vehicleRearLightDirections=vehicleRearLightColour=-1;
+    shadowEnabled=shadowTexture=shadowMatrix=shadowTexelSize=-1;
+    shadowTextureExtra[0]=shadowTextureExtra[1]=-1;
+    shadowMatrixExtra[0]=shadowMatrixExtra[1]=-1;
+    shadowTexelSizeExtra[0]=shadowTexelSizeExtra[1]=-1;
     #endif
 
 #endif
@@ -69,6 +127,9 @@ pglProgram::~pglProgram()
 #else
     if (program)
         glDeleteProgram(program);
+#ifdef RAD_ANDROID
+    if(multiviewProgram) glDeleteProgram(multiviewProgram);
+#endif
 #endif
 }
 
@@ -81,6 +142,24 @@ void pglProgram::SetProjectionMatrix(const pddiMatrix* matrix)
 #else
     if (projection >= 0)
         glUniformMatrix4fv(projection, 1, GL_FALSE, matrix->m[0]);
+#ifdef RAD_ANDROID
+    if(usingMultiviewProgram)
+    {
+        pddiMatrix projections[2],adjustments[2];
+        if(!SharOpenXR::GetMultiviewMatrices(reinterpret_cast<rmt::Matrix*>(projections),
+                                             reinterpret_cast<rmt::Matrix*>(adjustments)))
+        {
+            // Orthographic GUI, frontend and other screen-space passes use
+            // their Pure3D projection unchanged in both array layers.
+            projections[0]=*matrix;projections[1]=*matrix;
+            adjustments[0].Identity();adjustments[1].Identity();
+        }
+        if(vrProjection>=0)
+            glUniformMatrix4fv(vrProjection,2,GL_FALSE,projections[0].m[0]);
+        if(vrViewAdjustment>=0)
+            glUniformMatrix4fv(vrViewAdjustment,2,GL_FALSE,adjustments[0].m[0]);
+    }
+#endif
 #endif
 }
 
@@ -146,8 +225,36 @@ void pglProgram::SetTextureEnvironment(const pglTextureEnv* texEnv)
 
 
     #ifdef RAD_ANDROID
+    // Characters deliberately use alpha blending even at full opacity.
+    // Render-scope and shader-name filtering keep real transparent surfaces
+    // out, so blend mode alone must not disable their Phong shading.
+    // Alpha-tested fences and grates keep opaque surviving pixels. Their
+    // fragment program discards the holes before applying Phong.
+    int materialMode=pglGetEnhancedMaterialMode();
+    if(materialMode>0)
+    {
+        static bool loggedModes[6]={false,false,false,false,false,false};
+        if(materialMode<6 && !loggedModes[materialMode])
+        {
+            SDL_Log("GLES Enhanced Materials: active profile %d",materialMode);
+            loggedModes[materialMode]=true;
+        }
+    }
     if (lit >= 0)
-        glUniform1i(lit, texEnv->lit ? 1 : 0);
+        glUniform1i(lit,texEnv->lit ? 1 : 0);
+    if (vehiclePaint >= 0)
+        glUniform1i(vehiclePaint,materialMode);
+    if(enhancedSunDirection>=0)
+        glUniform3fv(enhancedSunDirection,1,pglGetEnhancedSunDirection());
+    if(vehicleDentCount>=0)
+        glUniform1i(vehicleDentCount,pglGetVehicleDeformationCount());
+    if(vehicleDents>=0)
+        glUniform4fv(vehicleDents,4,pglGetVehicleDeformation());
+    if(vehicleRearLightMode>=0) glUniform1i(vehicleRearLightMode,pglGetVehicleRearLightMode());
+    if(vehicleRearLightCount>=0) glUniform1i(vehicleRearLightCount,pglGetVehicleRearLightCount());
+    if(vehicleRearLightPositions>=0) glUniform3fv(vehicleRearLightPositions,8,pglGetVehicleRearLightPositions());
+    if(vehicleRearLightDirections>=0) glUniform3fv(vehicleRearLightDirections,8,pglGetVehicleRearLightDirections());
+    if(vehicleRearLightColour>=0) glUniform3fv(vehicleRearLightColour,1,pglGetVehicleRearLightColour());
     #endif
 
     if (texEnv->lit)
@@ -167,10 +274,11 @@ void pglProgram::SetTextureEnvironment(const pglTextureEnv* texEnv)
         glUniform1f(srm, 0.0f);
     }
 
-    if (texEnv->alphaTest && alpharef >= 0)
+    if (alpharef >= 0)
     {
-        PDDIASSERT(texEnv->alphaCompareMode == PDDI_COMPARE_GREATER ||
-            texEnv->alphaCompareMode == PDDI_COMPARE_GREATEREQUAL);
+        if(texEnv->alphaTest)
+            PDDIASSERT(texEnv->alphaCompareMode == PDDI_COMPARE_GREATER ||
+                texEnv->alphaCompareMode == PDDI_COMPARE_GREATEREQUAL);
         glUniform1f(alpharef, texEnv->alphaTest ? texEnv->alphaRef : 0.0f);
     }
 #endif
@@ -225,6 +333,45 @@ void pglProgram::SetAmbientLight(pddiColour ambient)
     if (acs)
         UniformColour(acs, ambient);
 }
+
+#if defined(RAD_ANDROID) && !defined(RAD_CG)
+void pglProgram::SetShadowState(bool enabled,GLuint texture,
+                                const pddiMatrix* matrix,float texelSize)
+{
+    if(shadowEnabled>=0) glUniform1i(shadowEnabled,enabled?1:0);
+    if(shadowMatrix>=0 && matrix)
+        glUniformMatrix4fv(shadowMatrix,1,GL_FALSE,matrix->m[0]);
+    if(shadowTexelSize>=0) glUniform1f(shadowTexelSize,texelSize);
+    if(shadowTexture>=0)
+    {
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D,enabled?texture:0);
+        glUniform1i(shadowTexture,1);
+        glActiveTexture(GL_TEXTURE0);
+    }
+}
+
+void pglProgram::SetCascadeShadowState(bool enabled,const GLuint* textures,
+                                       const pddiMatrix* matrices,
+                                       const float* texelSizes)
+{
+    SetShadowState(enabled,textures[0],&matrices[0],texelSizes[0]);
+    for(int i=0;i<2;++i)
+    {
+        if(shadowMatrixExtra[i]>=0)
+            glUniformMatrix4fv(shadowMatrixExtra[i],1,GL_FALSE,matrices[i+1].m[0]);
+        if(shadowTexelSizeExtra[i]>=0)
+            glUniform1f(shadowTexelSizeExtra[i],texelSizes[i+1]);
+        if(shadowTextureExtra[i]>=0)
+        {
+            glActiveTexture(GL_TEXTURE2+i);
+            glBindTexture(GL_TEXTURE_2D,enabled?textures[i+1]:0);
+            glUniform1i(shadowTextureExtra[i],2+i);
+        }
+    }
+    glActiveTexture(GL_TEXTURE0);
+}
+#endif
 
 #ifdef RAD_CG
 bool pglProgram::LinkProgram(CGprogram vertexShader, CGprogram fragmentShader)
@@ -294,6 +441,24 @@ bool pglProgram::LinkProgram(GLuint vertexShader, GLuint fragmentShader)
         SDL_Log("Program linking error: %s", infoLog.data());
         return false;
     }
+#ifdef RAD_ANDROID
+    const std::map<GLuint,ShaderSource>::const_iterator vsi=sShaderSources.find(vertexShader);
+    const std::map<GLuint,ShaderSource>::const_iterator fsi=sShaderSources.find(fragmentShader);
+    if(vsi!=sShaderSources.end() && fsi!=sShaderSources.end())
+    {
+        GLuint mvs=CompileMultiviewShader(GL_VERTEX_SHADER,vsi->second.text);
+        GLuint mfs=CompileMultiviewShader(GL_FRAGMENT_SHADER,fsi->second.text);
+        if(mvs&&mfs)
+        {
+            multiviewProgram=glCreateProgram();glAttachShader(multiviewProgram,mvs);glAttachShader(multiviewProgram,mfs);
+            glBindAttribLocation(multiviewProgram,0,"position");glBindAttribLocation(multiviewProgram,1,"normal");glBindAttribLocation(multiviewProgram,2,"texcoord");glBindAttribLocation(multiviewProgram,3,"color");
+            glLinkProgram(multiviewProgram);GLint linked=0;glGetProgramiv(multiviewProgram,GL_LINK_STATUS,&linked);
+            if(!linked){GLint n=0;glGetProgramiv(multiviewProgram,GL_INFO_LOG_LENGTH,&n);std::vector<GLchar> log(n>0?n:1);glGetProgramInfoLog(multiviewProgram,n,&n,log.data());SDL_Log("Multiview program link error: %s",log.data());glDeleteProgram(multiviewProgram);multiviewProgram=0;sMultiviewProgramFailure=true;}
+        }
+        else sMultiviewProgramFailure=true;
+        if(mvs)glDeleteShader(mvs);if(mfs)glDeleteShader(mfs);
+    }
+#endif
     
     projection = glGetUniformLocation(program, "projection");
     modelview = glGetUniformLocation(program, "modelview");
@@ -319,6 +484,25 @@ bool pglProgram::LinkProgram(GLuint vertexShader, GLuint fragmentShader)
 
     #ifdef RAD_ANDROID
     lit = glGetUniformLocation(program, "lit");
+    vehiclePaint = glGetUniformLocation(program, "vehiclePaint");
+    enhancedSunDirection = glGetUniformLocation(program,"enhancedSunDirection");
+    vehicleDentCount=glGetUniformLocation(program,"vehicleDentCount");
+    vehicleDents=glGetUniformLocation(program,"vehicleDents");
+    vehicleRearLightMode=glGetUniformLocation(program,"vehicleRearLightMode");
+    vehicleRearLightCount=glGetUniformLocation(program,"vehicleRearLightCount");
+    vehicleRearLightPositions=glGetUniformLocation(program,"vehicleRearLightPositions");
+    vehicleRearLightDirections=glGetUniformLocation(program,"vehicleRearLightDirections");
+    vehicleRearLightColour=glGetUniformLocation(program,"vehicleRearLightColour");
+    shadowEnabled=glGetUniformLocation(program,"shadowEnabled");
+    shadowTexture=glGetUniformLocation(program,"shadowTex");
+    shadowMatrix=glGetUniformLocation(program,"shadowMatrix");
+    shadowTexelSize=glGetUniformLocation(program,"shadowTexelSize");
+    shadowTextureExtra[0]=glGetUniformLocation(program,"shadowTex1");
+    shadowTextureExtra[1]=glGetUniformLocation(program,"shadowTex2");
+    shadowMatrixExtra[0]=glGetUniformLocation(program,"shadowMatrix1");
+    shadowMatrixExtra[1]=glGetUniformLocation(program,"shadowMatrix2");
+    shadowTexelSizeExtra[0]=glGetUniformLocation(program,"shadowTexelSize1");
+    shadowTexelSizeExtra[1]=glGetUniformLocation(program,"shadowTexelSize2");
     #endif
 
 #ifndef RAD_VITAGL
@@ -387,8 +571,42 @@ GLuint pglProgram::CompileShader(GLenum type, const char* source)
         SDL_Log("Shader compilation error: %s", infoLog.data());
         return 0;
     }
+#ifdef RAD_ANDROID
+    sShaderSources[shader]=ShaderSource{type,source};
+#endif
     return shader;
 }
+#endif
+
+#if defined(RAD_ANDROID) && !defined(RAD_CG)
+bool pglProgram::IsRequestedProgramActive() const
+{
+    return usingMultiviewProgram ==
+           (multiviewProgram && SharOpenXR::IsMultiviewRendering());
+}
+void pglProgram::UseProgram()
+{
+    const bool requestedMultiview=multiviewProgram && SharOpenXR::IsMultiviewRendering();
+    const bool nativeProgramChanged=requestedMultiview!=usingMultiviewProgram;
+    usingMultiviewProgram=requestedMultiview;
+    glUseProgram(usingMultiviewProgram?multiviewProgram:program);
+    // Uniform locations are immutable after link. The legacy locations were
+    // cached by LinkProgram; only refresh when crossing between the legacy and
+    // multiview native programs, not for every material submission.
+    if(nativeProgramChanged) RefreshUniformLocations();
+}
+void pglProgram::RefreshUniformLocations()
+{
+    const GLuint p=usingMultiviewProgram?multiviewProgram:program;
+    vrProjection=usingMultiviewProgram?glGetUniformLocation(p,"vrProjection[0]"):-1;
+    vrViewAdjustment=usingMultiviewProgram?glGetUniformLocation(p,"vrViewAdjustment[0]"):-1;
+    projection=glGetUniformLocation(p,"projection");modelview=glGetUniformLocation(p,"modelview");normalmatrix=glGetUniformLocation(p,"normalmatrix");alpharef=glGetUniformLocation(p,"alpharef");sampler=glGetUniformLocation(p,"tex");
+    for(int i=0;i<PDDI_MAX_LIGHTS;i++){std::string n=std::string("lights[")+char('0'+i)+"].";lights[i].enabled=glGetUniformLocation(p,(n+"enabled").c_str());lights[i].position=glGetUniformLocation(p,(n+"position").c_str());lights[i].colour=glGetUniformLocation(p,(n+"colour").c_str());lights[i].attenuation=glGetUniformLocation(p,(n+"attenuation").c_str());}
+    acs=glGetUniformLocation(p,"acs");acm=glGetUniformLocation(p,"acm");dcm=glGetUniformLocation(p,"dcm");scm=glGetUniformLocation(p,"scm");ecm=glGetUniformLocation(p,"ecm");srm=glGetUniformLocation(p,"srm");
+    lit=glGetUniformLocation(p,"lit");vehiclePaint=glGetUniformLocation(p,"vehiclePaint");enhancedSunDirection=glGetUniformLocation(p,"enhancedSunDirection");vehicleDentCount=glGetUniformLocation(p,"vehicleDentCount");vehicleDents=glGetUniformLocation(p,"vehicleDents");vehicleRearLightMode=glGetUniformLocation(p,"vehicleRearLightMode");vehicleRearLightCount=glGetUniformLocation(p,"vehicleRearLightCount");vehicleRearLightPositions=glGetUniformLocation(p,"vehicleRearLightPositions");vehicleRearLightDirections=glGetUniformLocation(p,"vehicleRearLightDirections");vehicleRearLightColour=glGetUniformLocation(p,"vehicleRearLightColour");shadowEnabled=glGetUniformLocation(p,"shadowEnabled");shadowTexture=glGetUniformLocation(p,"shadowTex");shadowMatrix=glGetUniformLocation(p,"shadowMatrix");shadowTexelSize=glGetUniformLocation(p,"shadowTexelSize");for(int i=0;i<2;i++){std::string n=std::to_string(i+1);shadowTextureExtra[i]=glGetUniformLocation(p,("shadowTex"+n).c_str());shadowMatrixExtra[i]=glGetUniformLocation(p,("shadowMatrix"+n).c_str());shadowTexelSizeExtra[i]=glGetUniformLocation(p,("shadowTexelSize"+n).c_str());}
+}
+#elif !defined(RAD_CG)
+void pglProgram::UseProgram(){glUseProgram(program);}
 #endif
 
 #ifdef RAD_CG

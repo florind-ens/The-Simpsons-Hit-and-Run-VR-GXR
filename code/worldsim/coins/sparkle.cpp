@@ -37,6 +37,11 @@
 #include <camera/supercammanager.h>
 #include <gameflow/gameflow.h>
 #include <mission/gameplaymanager.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+extern int gPglCsmBillboardMode;
+void pglSetParticleRendering(bool enabled);
+#endif
 
 //******************************************************************************
 //
@@ -348,6 +353,20 @@ spit out a sparkle. I think I'll try something along those lines.
 void Sparkle::AddGagSparkle(const rmt::Vector& Position, float Size, float Strength, uintptr_t Caller)
 {
     static unsigned int actionFlag = 0;
+#if defined(RAD_ANDROID)
+    static unsigned int vrEmissionCounter = 0;
+    if(SharOpenXR::IsVrModeEnabled())
+    {
+        // Gags request this effect from their render path. In stereo and CSM
+        // that used to turn one gameplay marker into several emission calls
+        // per frame. Emit only from the normal left-eye pass and at a modest
+        // fixed fraction of the headset refresh rate.
+        if(SharOpenXR::IsRightEyeRendering() || gPglCsmBillboardMode != 0)
+            return;
+        if((++vrEmissionCounter % 3) != 0)
+            return;
+    }
+#endif
     if(GetGameFlow()->GetCurrentContext() == CONTEXT_PAUSE)
     {
         return;
@@ -385,6 +404,15 @@ void Sparkle::AddGagSparkle(const rmt::Vector& Position, float Size, float Stren
     s->Size = GAG_SPARKLE_SIZE * Size;
     s->Life = 1.0f + ( sRandom.FloatSigned() * 0.1f );
     s->DurationRatio = GAG_SPARKLE_DURATION_RATIO;
+#if defined(RAD_ANDROID)
+    if(SharOpenXR::IsVrModeEnabled())
+    {
+        s->Size *= 0.70f;
+        // Roughly one second instead of 1.6 seconds, reducing the number of
+        // simultaneously blended blue sprites without removing the cue.
+        s->DurationRatio = 1.0f;
+    }
+#endif
     int red = rmt::Clamp(int(GAG_SPARKLE_COLOUR.Red() * Strength), 0, 255);
     int green = rmt::Clamp(int(GAG_SPARKLE_COLOUR.Green() * Strength), 0, 255);
     int blue = rmt::Clamp(int(GAG_SPARKLE_COLOUR.Blue() * Strength), 0, 255);
@@ -908,6 +936,9 @@ void Sparkle::Render( eSparkleRenderMode Mode )
         }
 
 
+#if defined(RAD_ANDROID)
+        pglSetParticleRendering(true);
+#endif
         sprite = p3d::pddi->BeginPrims( spriteShader, PDDI_PRIM_TRIANGLES, PDDI_V_CT , numWorldSparkles[ ti ] * 6 );
         for( int i = 0; i < mNumSparkles; ++i )
         {
@@ -1100,6 +1131,9 @@ void Sparkle::Render( eSparkleRenderMode Mode )
             sprite->Coord( corners[ 1 ].x, corners[ 1 ].y, corners[ 1 ].z );
         }
         p3d::pddi->EndPrims( sprite );
+#if defined(RAD_ANDROID)
+        pglSetParticleRendering(false);
+#endif
     }
     spriteShader->SetTexture( PDDI_SP_BASETEX, 0 );
     if( oldZWrite )

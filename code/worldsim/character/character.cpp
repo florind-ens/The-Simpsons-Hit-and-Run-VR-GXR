@@ -1,4 +1,7 @@
 #include <worldsim/character/character.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 
 #include <choreo/animation.hpp>
 #include <p3d/anim/skeleton.hpp>
@@ -324,6 +327,11 @@ mCollisionAreaIndex( WorldPhysicsManager::INVALID_COLLISION_AREA ),
 
 mpController( 0 ),
 mpCharacterRenderable( 0 ),
+mLastRenderRootPos(0.0f,0.0f,0.0f),
+mHasLastRenderRootPos(false),
+mpCsmPoseMatrices(0),
+mpCsmRestoreMatrices(0),
+mCsmPoseMatrixCount(0),
 mpPuppet( 0 ),
 mfFacingDir( 0.0f ),
 mfDesiredDir( 0.0f ),
@@ -817,6 +825,59 @@ void Character::Kick()
 
 }   
 
+bool Character::VrPunch(const rmt::Vector& start, const rmt::Vector& end,
+                        const rmt::Vector& direction)
+{
+    if(GetInteriorManager()->IsInside()) return false;
+
+    IntersectionList intersections;
+    intersections.FillIntersectionListDynamics(end,5.0f,true,this);
+    DynaPhysDSG* objectHit=NULL;
+    rmt::Vector hitPosition;
+    if(!intersections.TestIntersectionDynamics(start,end,&hitPosition,&objectHit) || !objectHit)
+        return false;
+
+    switch(objectHit->GetAIRef())
+    {
+    case PhysicsAIRef::NPCharacter:
+        {
+            NPCharacter* character=static_cast<NPCharacter*>(objectHit);
+            GetEventManager()->TriggerEvent(EVENT_KICK_NPC,character);
+            GetEventManager()->TriggerEvent(EVENT_KICK_NPC_SOUND,character);
+            GetEventManager()->TriggerEvent(EVENT_PEDESTRIAN_SMACKDOWN);
+            character->SetHasBeenHit(true);
+            if(character->GetStateManager()->GetState()==CharacterAi::LOCO)
+                character->ApplyKickForce(direction,CharacterTune::sfKickingForce);
+            else
+                character->ApplyForce(direction,CharacterTune::sfKickingForce);
+            GetEventManager()->TriggerEvent(EVENT_OBJECT_KICKED,objectHit);
+        }
+        break;
+    case PhysicsAIRef::redBrickVehicle:
+        GetEventManager()->TriggerEvent(EVENT_OBJECT_KICKED,objectHit);
+        break;
+    case PhysicsAIRef::StateProp:
+        {
+            StatePropDSG* stateprop=static_cast<StatePropDSG*>(objectHit);
+            if(stateprop->IsCollisionEnabled())
+            {
+                objectHit->ApplyForce(direction,CharacterTune::sfKickingForce);
+                GetEventManager()->TriggerEvent(EVENT_OBJECT_KICKED,objectHit);
+            }
+        }
+        break;
+    default:
+        objectHit->ApplyForce(direction,CharacterTune::sfKickingForce);
+        {
+            InstDynaPhysDSG* breakable=dynamic_cast<InstDynaPhysDSG*>(objectHit);
+            if(breakable) breakable->Break();
+        }
+        GetEventManager()->TriggerEvent(EVENT_OBJECT_KICKED,objectHit);
+        break;
+    }
+    return true;
+}
+
 void Character::Slam()
 {
     int i;
@@ -1279,6 +1340,12 @@ Return:         na
 */
 Character::~Character( void )
 {
+    delete [] mpCsmPoseMatrices;
+    delete [] mpCsmRestoreMatrices;
+    mpCsmPoseMatrices=0;
+    mpCsmRestoreMatrices=0;
+    mCsmPoseMatrixCount=0;
+
     tRefCounted::Release(mpStandingCollisionVolume);
 
     if(GetActionController())
@@ -1505,6 +1572,54 @@ void Character::PreSimUpdate( float timeins )
         UpdateGroundPlane( timeins );
     }
 
+#if defined(RAD_ANDROID)
+    // A fast tracked-controller sweep reuses the original kick damage/event
+    // rules. One hit per hand is allowed per short swing, preventing a hand
+    // resting inside a prop from dealing damage every simulation tick.
+    if(!IsNPC() && SharOpenXR::IsVrModeEnabled() && !IsInCar() && timeins>0.0f)
+    {
+        static rmt::Vector previousWorld[2];
+        static rmt::Vector previousTracking[2];
+        static bool previousValid[2]={false,false};
+        static bool swingArmed[2]={true,true};
+        tCamera* baseCamera=GetSuperCamManager()->GetSCC(0)->GetCamera();
+        for(unsigned hand=0;hand<2;++hand)
+        {
+            rmt::Matrix handWorld,handTracking;
+            if(!SharOpenXR::GetControllerWorldPose(hand,baseCamera,&handWorld) ||
+               !SharOpenXR::GetControllerLocalPose(hand,&handTracking))
+            {
+                previousValid[hand]=false;
+                continue;
+            }
+            const rmt::Vector current=handWorld.Row(3);
+            const rmt::Vector tracking=handTracking.Row(3);
+            if(previousValid[hand])
+            {
+                rmt::Vector trackingDelta=tracking-previousTracking[hand];
+                const float speed=trackingDelta.Magnitude()/timeins;
+                if(speed<0.65f) swingArmed[hand]=true;
+                rmt::Vector sweep=current-previousWorld[hand];
+                if(speed>=3.50f && swingArmed[hand] && sweep.MagnitudeSqr()>0.0001f)
+                {
+                    sweep.Normalize();
+                    // Extend through the 10 cm visual hand so grazing contact
+                    // is still detected by the engine's ray intersection.
+                    const rmt::Vector start=previousWorld[hand]-sweep*0.10f;
+                    const rmt::Vector end=current+sweep*0.10f;
+                    // Consume the swing even when it misses. A new hit is only
+                    // possible after the physical hand slows down again.
+                    VrPunch(start,end,sweep);
+                    swingArmed[hand]=false;
+                }
+            }
+            previousWorld[hand]=current;
+            previousTracking[hand]=tracking;
+            previousValid[hand]=true;
+        }
+    }
+#endif
+
     /////////////////////////////////////////////////
     // Test if we're too far from the camera for some updates
     mTooFarToUpdate = false;
@@ -1550,8 +1665,6 @@ void Character::PreSimUpdate( float timeins )
     {
         UpdateDesiredDirAndSpeed( rmt::Vector(0,0,0) );
     }
-
-
 
     if( mpSimStateObj->GetControl() == sim::simSimulationCtrl && 
         GetStateManager()->GetState() != CharacterAi::INSIM )
@@ -4913,6 +5026,8 @@ void Character::Display(void)
     backToTheOrigin.InvertOrtho();
 
     rmt::Vector rootPos = pose->GetJoint(0)->worldMatrix.Row(3);
+    mLastRenderRootPos = rootPos;
+    mHasLastRenderRootPos = true;
     
     bool shouldScale = mScale != 1.0f;
 
@@ -4932,6 +5047,22 @@ void Character::Display(void)
             pose->GetJoint(i)->worldMatrix = tmp;
         }
     }
+
+    // Each puppet may update its pose again before the auxiliary CSM pass.
+    // Keep a private root-relative snapshot for this character; otherwise the
+    // shared drawable pose can contain another character's (usually player's)
+    // animation when NPC shadows are submitted.
+    const int poseJointCount=pose->GetNumJoint();
+    if(mCsmPoseMatrixCount!=poseJointCount)
+    {
+        delete [] mpCsmPoseMatrices;
+        delete [] mpCsmRestoreMatrices;
+        mpCsmPoseMatrices=new rmt::Matrix[poseJointCount];
+        mpCsmRestoreMatrices=new rmt::Matrix[poseJointCount];
+        mCsmPoseMatrixCount=poseJointCount;
+    }
+    for(int i=0;i<poseJointCount;++i)
+        mpCsmPoseMatrices[i]=pose->GetJoint(i)->worldMatrix;
 
     p3d::stack->Push();
     p3d::stack->Translate(0.0f, mYAdjust, 0.0f);
@@ -4979,6 +5110,40 @@ void Character::Display(void)
     }
 #endif // DRAW_CHARACTER_COLLISION
     DSG_END_PROFILE("  Character::Display")
+}
+
+void Character::DisplayCsmCaster(void)
+{
+    if(IsInCar() || !mHasLastRenderRootPos || !mpCharacterRenderable ||
+       !mpCharacterRenderable->GetDrawable() || !mpPuppet)
+    {
+        return;
+    }
+
+    // Display() has already converted the pose to root-relative matrices for
+    // this frame. Reuse that pose without updating animation or applying the
+    // near-camera character cull a second time.
+    tPose* pose=mpPuppet->GetP3DPose();
+    if(!pose || pose->GetNumJoint()!=mCsmPoseMatrixCount ||
+       !mpCsmPoseMatrices || !mpCsmRestoreMatrices)
+        return;
+
+    for(int i=0;i<mCsmPoseMatrixCount;++i)
+    {
+        mpCsmRestoreMatrices[i]=pose->GetJoint(i)->worldMatrix;
+        pose->GetJoint(i)->worldMatrix=mpCsmPoseMatrices[i];
+    }
+
+    p3d::stack->Push();
+    p3d::stack->Translate(0.0f,mYAdjust,0.0f);
+    p3d::stack->Push();
+    p3d::stack->Translate(mLastRenderRootPos);
+    mpCharacterRenderable->DisplayCsmModel(pose);
+    p3d::stack->Pop();
+    p3d::stack->Pop();
+
+    for(int i=0;i<mCsmPoseMatrixCount;++i)
+        pose->GetJoint(i)->worldMatrix=mpCsmRestoreMatrices[i];
 }
 
 void Character::SetAmbient(const char* location, float radius)

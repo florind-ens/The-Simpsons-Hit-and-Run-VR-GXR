@@ -15,6 +15,7 @@
 
 // MIKE IMPROVE : Can this be cleaned up a little?
 #include "FeSprite.h"
+
 #include "FeApp.h"
 #include "FeScreen.h"
 #include <raddebug.hpp>
@@ -180,6 +181,28 @@ void FeSprite::Display()
 #endif
         }
     }
+}
+
+void FeSprite::CopyImagesFrom( const FeSprite& source )
+{
+    for( int i = 0; i < source.mAliases.Size(); ++i )
+        AddImage( static_cast<const char*>( *source.mAliases[i] ) );
+    if( source.mIndex >= 0 && source.mIndex < mAliases.Size() )
+        SetIndex( source.mIndex );
+}
+
+void FeSprite::ReplaceImagesFrom( const FeSprite& source )
+{
+    if( &source==this ) return;
+    while( mAliases.Size() )
+    {
+        const int i=mAliases.Size()-1;
+        delete mAliases[i];
+        mAliases.Erase(i);
+    }
+    mIndex=-1;
+    mSprite=NULL;
+    CopyImagesFrom(source);
 }
 
 //===========================================================================

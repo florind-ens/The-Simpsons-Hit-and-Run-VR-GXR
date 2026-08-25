@@ -40,9 +40,15 @@
 #include <events/eventmanager.h>
 
 #include <render/RenderManager/RenderManager.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 #include <p3d/utility.hpp>
 #include <p3d/matrixstack.hpp>
 #include <p3d/context.hpp>
+#if defined(RAD_ANDROID)
+#include <GLES2/gl2.h>
+#endif
 #include <radmemory.hpp>
 #include <radmemorymonitor.hpp>
 #include <pddi/pddi.hpp>
@@ -268,6 +274,11 @@ void FMVPlayer::Play()
 #ifdef FINAL
         m_UserInputHandler->SetEnabled(GetSkippable());
 #endif
+#ifdef RAD_ANDROID
+        // Preserve the original Android behaviour: the FMV handler used to
+        // remain enabled independently of the desktop FINAL build flag.
+        m_UserInputHandler->SetEnabled(true);
+#endif
 
         // registrar input
         for( unsigned i = 0; i < GetInputManager()->GetMaxControllers(); i++ )
@@ -288,6 +299,9 @@ void FMVPlayer::Play()
         m_refIRadMoviePlayer->SetVolume(mMovieVolume);
 
         m_refIRadMoviePlayer->Play();
+#ifdef RAD_ANDROID
+        SharOpenXR::BeginMoviePlane();
+#endif
     }
 }
 
@@ -428,6 +442,9 @@ void FMVPlayer::Stop()
 //ULTIMA PRUEBA 
 void FMVPlayer::Stop()
 {
+#ifdef RAD_ANDROID
+    SharOpenXR::EndMoviePlane();
+#endif
     // Evitar doble stop
     if( !this->IsPlaying() || m_refIRadMoviePlayer == NULL )
     {
@@ -584,6 +601,20 @@ void FMVPlayer::DoRender()
 
     mFrameReady = false;
 
+#if defined(RAD_ANDROID)
+    // Service timestamps without waiting for the encoded frame interval.
+    // radMoviePlayer keeps the currently due texture locked/presentable until
+    // its PTS window expires, so the OpenXR loop may continue at 90 Hz while
+    // the movie itself advances at its authored frame rate.
+    ::radMovieService2();
+    ::radSoundHalSystemGet()->Service();
+    ::radFileService();
+    state=m_refIRadMoviePlayer?m_refIRadMoviePlayer->GetState():IRadMoviePlayer2::NoData;
+    if((mFadeOut<=0.0f) && (mFadeOut!=-1.0f)) Stop();
+    if(state==IRadMoviePlayer2::NoData || m_refIRadMoviePlayer==NULL) Stop();
+    return;
+#endif
+
     while( !mFrameReady && (state != IRadMoviePlayer2::NoData))
     {
 		::radMovieService2( );
@@ -637,7 +668,9 @@ void FMVPlayer::IterateLoop( IRadMoviePlayer2* pIRadMoviePlayer )
     p3d::pddi->SetZCompare(PDDI_COMPARE_ALWAYS);
 #endif
 
+#if !defined(RAD_ANDROID)
     pIRadMoviePlayer->Render();
+#endif
 
 #if defined(RAD_ANDROID)
     // --- RESTORE STATES ---
@@ -700,7 +733,12 @@ void FMVPlayer::IterateLoop( IRadMoviePlayer2* pIRadMoviePlayer )
     // END NEW LINES 
 
     // Render del frame de vídeo (UNA sola vez)
+    // Android submits this decoded texture from RenderCurrentVrEye() after
+    // the corresponding OpenXR framebuffer has been bound. Drawing it here
+    // would target the legacy wide surface and split it between both eyes.
+#if !defined(RAD_ANDROID)
     pIRadMoviePlayer->Render();
+#endif
 
     // NEW LINES 
 #if defined(RAD_ANDROID)
@@ -727,6 +765,45 @@ void FMVPlayer::IterateLoop( IRadMoviePlayer2* pIRadMoviePlayer )
 
     mFrameReady = true;
 }
+
+#if defined(RAD_ANDROID)
+bool FMVPlayer::IsDecoderPlaying()
+{
+    return m_refIRadMoviePlayer &&
+           m_refIRadMoviePlayer->GetState()==IRadMoviePlayer2::Playing;
+}
+
+void FMVPlayer::RenderCurrentVrEye()
+{
+    if(!IsDecoderPlaying()) return;
+    // GUI/presentation passes may leave per-eye clipping enabled. The movie
+    // plane must cover the complete OpenXR target; otherwise each eye sees a
+    // separate aperture with a black strip between them.
+    const GLboolean oldScissor=glIsEnabled(GL_SCISSOR_TEST);
+    const GLboolean oldStencil=glIsEnabled(GL_STENCIL_TEST);
+    if(oldScissor) glDisable(GL_SCISSOR_TEST);
+    if(oldStencil) glDisable(GL_STENCIL_TEST);
+    const bool oldZWrite=p3d::pddi->GetZWrite();
+    const pddiCompareMode oldZComp=p3d::pddi->GetZCompare();
+    p3d::pddi->SetZWrite(false);
+    p3d::pddi->SetZCompare(PDDI_COMPARE_ALWAYS);
+    // Render() reuses the uploaded decoded texture. Calling it once for each
+    // bound eye gives both eyes the identical mono frame (zero disparity).
+    SharOpenXR::SetMovieRendering(true);
+    static bool loggedRender=false;
+    if(!loggedRender)
+    {
+        LOGI("FMV: rendering decoded texture in OpenXR eye pass");
+        loggedRender=true;
+    }
+    m_refIRadMoviePlayer->Render();
+    SharOpenXR::SetMovieRendering(false);
+    if(oldStencil) glEnable(GL_STENCIL_TEST);
+    if(oldScissor) glEnable(GL_SCISSOR_TEST);
+    p3d::pddi->SetZCompare(oldZComp);
+    p3d::pddi->SetZWrite(oldZWrite);
+}
+#endif
 
 
 

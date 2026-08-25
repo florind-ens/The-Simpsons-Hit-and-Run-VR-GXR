@@ -299,6 +299,14 @@ void Pedestrian::ActivateSelf()
     rmt::Vector camTarget;
     SuperCam* pCam = GetSuperCamManager()->GetSCC(0)->GetActiveSuperCam();
     pCam->GetHeadingNormalized( &camTarget );
+#if defined(RAD_ANDROID)
+    rmt::Matrix vrCullCamera;
+    if(SharOpenXR::GetLatestCullingCamera(&vrCullCamera))
+    {
+        camTarget=vrCullCamera.Row(2);
+        camTarget.Normalize();
+    }
+#endif
     rAssert( rmt::Epsilon(camTarget.MagnitudeSqr(), 1.0f, 0.0005f) );
 
     rmt::Vector center = playerPos + camTarget * PedestrianManager::CENTER_OFFSET;

@@ -59,6 +59,7 @@ endif()
 if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Android")
 	add_definitions(-DRAD_ANDROID)
 	set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -llog -landroid -lEGL -lGLESv2")
+	include_directories("${CMAKE_CURRENT_SOURCE_DIR}/libs/SDL3/src/video/khronos")
 endif()
 
 find_program(CCACHE_FOUND ccache)

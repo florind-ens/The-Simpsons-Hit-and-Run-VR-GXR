@@ -49,6 +49,9 @@
 #include <presentation/gui/frontend/guiscreenviewmovies.h>
 #include <presentation/gui/frontend/guiscreenplaymovie.h>
 #include <presentation/gui/frontend/guiscreendisplay.h>
+#ifdef RAD_ANDROID
+#include <presentation/gui/ingame/guiscreenpausevr.h>
+#endif
 
 #include <presentation/presentation.h>
 #include <presentation/fmvplayer/fmvplayer.h>
@@ -326,8 +329,15 @@ MEMTRACK_PUSH_GROUP( "CGUIManagerFrontEnd" );
     pScroobyScreen = m_pScroobyProject->GetScreen( "Controller" );
     if( pScroobyScreen != NULL )
     {
+#ifdef RAD_ANDROID
+        // The frontend project has no authored PauseSettings screen.  Use
+        // Controller only as a canvas; CGuiScreenPauseVR builds its own rows.
+        pScreen = new CGuiScreenPauseVR( pScroobyScreen, this );
+        this->AddWindow( CGuiWindow::GUI_SCREEN_ID_VR, pScreen );
+#else
         pScreen = new CGuiScreenController( pScroobyScreen, this );
         this->AddWindow( CGuiWindow::GUI_SCREEN_ID_CONTROLLER, pScreen );
+#endif
     }
 
     pScroobyScreen = m_pScroobyProject->GetScreen( "Sound" );
@@ -351,7 +361,7 @@ MEMTRACK_PUSH_GROUP( "CGUIManagerFrontEnd" );
         this->AddWindow( CGuiWindow::GUI_SCREEN_ID_VIEW_MOVIES, pScreen );
     }
 
-#ifdef RAD_PC
+#if defined(RAD_PC) || defined(RAD_ANDROID)
     pScroobyScreen = m_pScroobyProject->GetScreen( "Display" );
     if( pScroobyScreen != NULL )
     {

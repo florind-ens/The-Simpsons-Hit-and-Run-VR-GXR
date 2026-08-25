@@ -21,6 +21,16 @@ class pddiPrimBuffer;
 class pddiPrimStream;
 class pddiPrimBufferStream;
 
+// Temporarily lowers the opacity of translucent primitive groups while a VR
+// vehicle is drawn. The scope is opened and closed by GeometryVehicle.
+void p3dSetVrVehicleGlassFaded(bool faded);
+void p3dSetVrVehicleDriverSuppressed(bool suppressed);
+void p3dSetCsmOpaqueReceiverOnly(bool enabled);
+void p3dSetEnhancedWorldMaterials(bool enabled);
+void p3dSetEnhancedCharacterMaterials(bool enabled);
+void p3dSetEnhancedSunDirection(const rmt::Vector& direction);
+void p3dSetEnhancedVehicleMaterials(bool enabled);
+
 //-------------------------------------------------------------------
 class tPrimGroup : public tRefCounted
 {

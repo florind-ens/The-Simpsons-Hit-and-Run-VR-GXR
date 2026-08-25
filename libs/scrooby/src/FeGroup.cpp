@@ -5,6 +5,23 @@
 #include "FeGroup.h"
 #endif
 #include "tLinearTable.h"
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#include <p3d/pure3d.hpp>
+#endif
+
+#if defined(RAD_ANDROID)
+static Scrooby::Group* gVrRadarGroup=NULL;
+static Scrooby::Group* gVrMissionHudGroup[6]={NULL,NULL,NULL,NULL,NULL,NULL};
+void ScroobySetVrRadarGroup(Scrooby::Group* group)
+{
+    gVrRadarGroup=group;
+}
+void ScroobySetVrMissionHudGroup(unsigned slot,Scrooby::Group* group)
+{
+    if(slot<6) gVrMissionHudGroup[slot]=group;
+}
+#endif
 
 FeGroup::FeGroup( const tName& name ) 
 : 
@@ -17,6 +34,54 @@ FeGroup::FeGroup( const tName& name )
 
 FeGroup::~FeGroup()
 {
+}
+
+void FeGroup::Display()
+{
+#if defined(RAD_ANDROID)
+    const bool isRadar=static_cast<Scrooby::Group*>(this)==gVrRadarGroup &&
+                        SharOpenXR::IsSpatialHudEnabled();
+    int missionSlot=-1;
+    for(int i=0;i<6;++i)
+        if(static_cast<Scrooby::Group*>(this)==gVrMissionHudGroup[i] &&
+           SharOpenXR::IsSpatialHudEnabled()) missionSlot=i;
+    // The legacy GUI is stateful: on its second eye traversal Map0 can draw
+    // again while Radar0 sprites are skipped. Capturing that incomplete pass
+    // overwrites the shared texture and leaves the frame visible only in the
+    // left eye. Capture the complete source group once, then EndEye presents
+    // that same cached texture stereoscopically for both eyes.
+    if((isRadar||missionSlot>=0) && SharOpenXR::IsRightEyeRendering())
+        return;
+    int radarXMin=0,radarYMin=0,radarXMax=640,radarYMax=480;
+    if(isRadar) GetBoundingBox(radarXMin,radarYMin,radarXMax,radarYMax);
+    if(missionSlot>=0) GetBoundingBox(radarXMin,radarYMin,radarXMax,radarYMax);
+    const bool captured=isRadar ? SharOpenXR::BeginRadarCapture(
+        radarXMin,radarYMin,radarXMax,radarYMax) :
+        (missionSlot>=0 && SharOpenXR::BeginMissionHudCapture(
+            (unsigned)missionSlot,radarXMin,radarYMin,radarXMax,radarYMax));
+    if(captured)
+    {
+        // BeginRadarCapture changes the framebuffer and enables the radar
+        // projection override after PDDI has already submitted the normal HUD
+        // projection. Force it into the currently bound shader before any of
+        // this group's children are drawn.
+        const pddiProjectionMode mode=p3d::pddi->GetProjectionMode();
+        p3d::pddi->SetProjectionMode(mode);
+    }
+#endif
+    FeOwner::Display();
+#if defined(RAD_ANDROID)
+    if(captured)
+    {
+        if(isRadar) SharOpenXR::EndRadarCapture();
+        else SharOpenXR::EndMissionHudCapture();
+        // Re-submit the unchanged projection mode: the spatial radar matrix
+        // was selected without changing this enum, so otherwise PDDI keeps it
+        // cached and projects all following HUD groups off screen as well.
+        const pddiProjectionMode mode=p3d::pddi->GetProjectionMode();
+        p3d::pddi->SetProjectionMode(mode);
+    }
+#endif
 }
 
 //===========================================================================

@@ -5,6 +5,9 @@
     All rights reserved.
 ===========================================================================*/
 #include <p3d/texture.hpp>
+#if defined(RAD_ANDROID)
+#include <pddi/gles/gltex.hpp>
+#endif
 #include <p3d/image.hpp>
 #include <p3d/imagefactory.hpp>
 #include <p3d/imageconverter.hpp>
@@ -218,6 +221,9 @@ tTexture* tTextureLoader::LoadTexture(tChunkFile* f)
     if (texture != NULL)
     {
         texture->SetName(name);
+#if defined(RAD_ANDROID)
+        pglSetTextureSourceName(texture->GetTexture(),name);
+#endif
         texture->SetPriority(priority);
     }
     return texture;

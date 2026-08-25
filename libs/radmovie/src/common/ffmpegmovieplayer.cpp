@@ -137,7 +137,8 @@ radMoviePlayer::radMoviePlayer( void )
     m_DefaultFrameDurationMs( 33 ),   // ~30fps fallback
     m_ClockSynced(false),
     m_ClockOffsetMs(0),
-    m_RenderedFirstEarly(false)
+    m_RenderedFirstEarly(false),
+    m_InputEof(false)
 {
     radTimeCreateStopwatch( &m_refIRadStopwatch, radTimeUnit_Millisecond, GetThisAllocator( ) );
 }
@@ -209,7 +210,9 @@ bool radMoviePlayer::Render( void )
     // The video frame has been used.  The next can be decoded
     //
 
+#if !defined(RAD_ANDROID)
     m_VideoFrameState = VideoFrame_Unlocked;
+#endif
 
     return ret;
 }
@@ -271,26 +274,7 @@ static std::string RadMakeAbsoluteGamePath(const char* path)
     if (p[0] == '/' || (p.size() >= 2 && p[1] == ':') || p.find("://") != std::string::npos)
         return p;
 
-    const char* ext = SDL_AndroidGetExternalStoragePath();
-
-    std::string base;
-    if (ext && ext[0])
-    {
-        base = ext;
-    }
-    else
-    {
-        base = "/storage/emulated/0";
-    }
-
-    for (char& c : base) if (c == '\\') c = '/';
-
-    // Si SDL solo devuelve "/storage/emulated/0", completamos como haces con el drive “ideal”
-    if (base.find("/Android/data/") == std::string::npos)
-    {
-        // OJO: aquí sí tienes hardcodeado el package (igual que en tu fallback actual)
-        base += "/Android/data/org.libsdl.app/files";
-    }
+    std::string base = "/storage/emulated/0/SimpsonsHitRun";
 
     if (!base.empty() && base.back() != '/')
         base.push_back('/');
@@ -470,6 +454,7 @@ void radMoviePlayer::Load( const char * pVideoFileName, unsigned int audioTrackI
     m_ClockSynced = false;
     m_ClockOffsetMs = 0;
     m_RenderedFirstEarly = false;
+    m_InputEof = false;
 
     // default duration fallback based on stream FPS
     m_DefaultFrameDurationMs = 33; // default ~30fps
@@ -482,6 +467,10 @@ void radMoviePlayer::Load( const char * pVideoFileName, unsigned int audioTrackI
             m_DefaultFrameDurationMs = (unsigned int)( 1000.0 / fps + 0.5 );
         }
     }
+#ifdef RAD_ANDROID
+    rDebugPrintf("Movie: stream fps=%d/%d (%.3f), frame duration=%u ms\n",
+                 fr.num,fr.den,(fr.den?av_q2d(fr):0.0),m_DefaultFrameDurationMs);
+#endif
 
 #ifndef RAD_VITAGL
     m_pSwsCtx = sws_getContext(
@@ -730,6 +719,18 @@ void radMoviePlayer::Service( void ) {
         //
 
         if (m_VideoFrameState == VideoFrame_Unlocked) {
+            if (m_InputEof) {
+                // Render() unlocks the last texture as soon as it has been
+                // submitted.  Do not tear the movie down until that frame's
+                // complete presentation interval has elapsed.
+                const unsigned int sw = m_refIRadStopwatch->GetElapsedTime();
+                const unsigned int currentTime = m_ClockSynced ?
+                    (sw - m_ClockOffsetMs) : sw;
+                if (currentTime >= m_PresentationTime + m_PresentationDuration) {
+                    Unload();
+                }
+                return;
+            }
             //
             // Keep an eye on the states of things to detect the end of the movie
             //
@@ -850,9 +851,9 @@ void radMoviePlayer::Service( void ) {
                 rDebugChannelPrintf(radMovieDebugChannel2,
                                     "radMoviePlayer: Out of data at [%lld]\n", m_pVideoFrame->pts);
 
-                // We've hit the end of the movie.  Unload!
-
-                Unload();
+                // Keep the final decoded texture alive for its full duration.
+                // The next services above will retire it at the correct time.
+                m_InputEof = true;
                 return;
             }
         }

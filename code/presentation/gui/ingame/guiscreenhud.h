@@ -188,6 +188,7 @@ private:
     
     bool m_androidHudMapLayoutInitialized;
     bool m_androidHudMapTouchLayoutActive;
+    bool m_androidHudMapVrLayoutActive;
 #endif
 
     static const unsigned int BITMAP_TEXT_BUFFER_SIZE = 8;

@@ -1,5 +1,8 @@
 #include <ai/sequencer/actioncontroller.h>
 #include <worldsim/character/charactercontroller.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 #include <worldsim/character/controllereventhandler.h>
 #include <worldsim/character/charactermappable.h>
 #include <worldsim/character/character.h>
@@ -352,6 +355,25 @@ void CameraRelativeCharacterController::GetDirection( rmt::Vector& outDirection 
     }
 
     GetCharacterMappable( )->GetDirection( outDirection );
+
+#if defined(RAD_ANDROID)
+    if( SharOpenXR::IsVrModeEnabled() )
+    {
+        rmt::Vector headForward;
+        if( SharOpenXR::GetHeadForward( &headForward ) )
+        {
+            rmt::Matrix headMatrix;
+            headMatrix.Identity();
+            headMatrix.FillHeading( headForward, rmt::Vector( 0.0f, 1.0f, 0.0f ) );
+            outDirection.Transform( headMatrix );
+
+            rmt::Matrix invMat = mpCharacter->GetInverseParentTransform();
+            invMat.IdentityTranslation();
+            outDirection.Transform( invMat );
+            return;
+        }
+    }
+#endif
 
 #ifdef RAD_PC
     SuperCam* cam = GetSuperCamManager()->GetSCC( 0 )->GetActiveSuperCam();

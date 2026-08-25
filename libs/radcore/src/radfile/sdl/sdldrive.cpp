@@ -310,22 +310,11 @@ radSdlDrive::radSdlDrive(const char* pdrivespec, radMemoryAllocator alloc)
     // storage "Android/data/<package>/files/" usando SDL.
     // ============================================================
 #if defined(RAD_ANDROID)
-
-    // CAMBIO AQUÍ: usamos SDL_AndroidGetExternalStoragePath (SDL_system.h)
-    const char* ext = SDL_AndroidGetExternalStoragePath();
-
-    if (ext && ext[0])
-    {
-        
-		strncpy(m_DrivePath, ext, radFileFilenameMax);
-        m_DrivePath[radFileFilenameMax] = '\0'; // CAMBIO AQUÍ
-    }
-    else
-    {
-        // CAMBIO AQUÍ: fallback por si SDL devuelve null (raro)
-        strncpy(m_DrivePath, "/storage/emulated/0/Android/data/com.c4rlox.simpsons/files/", radFileFilenameMax);
-        m_DrivePath[radFileFilenameMax] = '\0';
-    }
+    // Keep game data in a stable, adb-accessible location.  App-private
+    // external storage cannot be populated recursively by adb on recent
+    // Quest/Android versions because of scoped-storage restrictions.
+    strncpy(m_DrivePath, "/storage/emulated/0/SimpsonsHitRun/", radFileFilenameMax);
+    m_DrivePath[radFileFilenameMax] = '\0';
 
 #else
     // Si no te han puesto drive path, defines el root por plataforma

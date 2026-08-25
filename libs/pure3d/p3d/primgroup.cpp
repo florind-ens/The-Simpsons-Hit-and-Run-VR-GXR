@@ -20,6 +20,10 @@
 #endif
 
 #include <string.h>
+#if defined(RAD_ANDROID)
+void pglSetEnhancedMaterialMode(int mode);
+void pglSetEnhancedSunDirection(float x,float y,float z);
+#endif
 
 
 #define INDEXED_STREAM_COLOUR_WITH_OFFSET(  i, color, offset )  \
@@ -41,6 +45,145 @@
                     stream->UV( uv[ indices[ i ] ].u + offset[ indices[ i ] ].u, uv[ indices[ i ] ].v + offset[ indices[ i ] ].v, uvIdx );
 
 using namespace RadicalMathLibrary;
+
+static bool gFadeVrVehicleGlass=false;
+static bool gSuppressVrVehicleDriver=false;
+static bool gCsmOpaqueReceiverOnly=false;
+static bool gEnhancedWorldMaterials=false;
+static bool gEnhancedCharacterMaterials=false;
+static bool gEnhancedVehicleMaterials=false;
+static tShader* gFadedVrVehicleShaders[128];
+static unsigned gFadedVrVehicleShaderCount=0;
+
+void p3dSetVrVehicleGlassFaded(bool faded)
+{
+    if(!faded)
+    {
+        for(unsigned i=0; i<gFadedVrVehicleShaderCount; ++i)
+            gFadedVrVehicleShaders[i]->SetInt(PDDI_SP_EMISSIVEALPHA,255);
+        gFadedVrVehicleShaderCount=0;
+    }
+    gFadeVrVehicleGlass=faded;
+}
+
+void p3dSetVrVehicleDriverSuppressed(bool suppressed)
+{
+    gSuppressVrVehicleDriver=suppressed;
+}
+
+void p3dSetCsmOpaqueReceiverOnly(bool enabled)
+{
+    gCsmOpaqueReceiverOnly=enabled;
+}
+
+void p3dSetEnhancedWorldMaterials(bool enabled)
+{
+    gEnhancedWorldMaterials=enabled;
+#if defined(RAD_ANDROID)
+    if(!enabled && !gEnhancedVehicleMaterials) pglSetEnhancedMaterialMode(0);
+#endif
+}
+
+void p3dSetEnhancedCharacterMaterials(bool enabled)
+{
+    gEnhancedCharacterMaterials=enabled;
+#if defined(RAD_ANDROID)
+    if(!enabled) pglSetEnhancedMaterialMode(gEnhancedWorldMaterials ? 1 : 0);
+#endif
+}
+
+void p3dSetEnhancedSunDirection(const rmt::Vector& direction)
+{
+#if defined(RAD_ANDROID)
+    pglSetEnhancedSunDirection(direction.x,direction.y,direction.z);
+#endif
+}
+
+void p3dSetEnhancedVehicleMaterials(bool enabled)
+{
+    gEnhancedVehicleMaterials=enabled;
+#if defined(RAD_ANDROID)
+    if(!enabled) pglSetEnhancedMaterialMode(gEnhancedWorldMaterials ? 1 : 0);
+#endif
+}
+
+#if defined(RAD_ANDROID)
+static int EnhancedMaterialMode(tShader* shader)
+{
+    // mTranslucent is a conservative asset-level flag and is also set on a
+    // number of opaque character/vehicle shaders. The GLES material's actual
+    // blend state performs the reliable transparency rejection later.
+    if(!shader) return 0;
+    if(gEnhancedCharacterMaterials) return 3;
+    const char* name=shader->GetName();
+    static const char* transparent[]={
+        "glass","Glass","window","Window","wind","Wind","tire","Tire",
+        "light","Light","lamp","Lamp","shadow","Shadow"
+    };
+    if(name)
+        for(unsigned i=0;i<sizeof(transparent)/sizeof(transparent[0]);++i)
+            if(strstr(name,transparent[i])) return 0;
+    if(!gEnhancedVehicleMaterials)
+    {
+        if(!gEnhancedWorldMaterials) return 0;
+        // All regular opaque world geometry uses one deliberately restrained
+        // Phong profile.  Filename heuristics made some scenery completely
+        // matte and other scenery implausibly metallic in stripped releases.
+        return 1;
+    }
+    if(!name) return 2;
+    static tShader* logged[48]={0};
+    static unsigned loggedCount=0;
+    bool seen=false;
+    for(unsigned i=0;i<loggedCount;++i) if(logged[i]==shader) { seen=true; break; }
+    if(!seen && loggedCount<sizeof(logged)/sizeof(logged[0]))
+    {
+        logged[loggedCount++]=shader;
+        p3d::printf("VR enhanced vehicle paint: %s\n",name);
+    }
+    return 2;
+}
+#endif
+
+static void FadeVrVehicleGlass(tShader* shader)
+{
+    if(!gFadeVrVehicleGlass || !shader || !shader->mTranslucent) return;
+    for(unsigned i=0; i<gFadedVrVehicleShaderCount; ++i)
+        if(gFadedVrVehicleShaders[i]==shader) return;
+    if(gFadedVrVehicleShaderCount<sizeof(gFadedVrVehicleShaders)/sizeof(gFadedVrVehicleShaders[0]))
+        gFadedVrVehicleShaders[gFadedVrVehicleShaderCount++]=shader;
+    shader->SetInt(PDDI_SP_EMISSIVEALPHA,64);
+}
+
+static bool SuppressVrVehicleDriver(tShader* shader)
+{
+    if(!gSuppressVrVehicleDriver || !shader) return false;
+    // RAD_RELEASE deliberately strips entity name strings, making GetName()
+    // return "NO_NAME_TEXT". Runtime material filtering must therefore use
+    // the stable Pure3D UID hashes generated from the authored shader names.
+    static const tUID hiddenShaderUids[]={
+        tEntity::MakeUID("char_swatches_m"),
+        tEntity::MakeUID("char_swatches_m1"),
+        tEntity::MakeUID("char_swatches_lit_m"),
+        tEntity::MakeUID("Windsheild_m"),
+        tEntity::MakeUID("WindsheildT_m"),
+        tEntity::MakeUID("WindsheildTx_m"),
+        tEntity::MakeUID("WindsheildC_m"),
+        tEntity::MakeUID("Windsheildc_m"),
+        tEntity::MakeUID("WindsheildH_m"),
+        tEntity::MakeUID("Windshield_m"),
+        tEntity::MakeUID("WindshieldT_m"),
+        tEntity::MakeUID("cNonup_WindsheildT_m"),
+        tEntity::MakeUID("marge_vWindsheild_m"),
+        tEntity::MakeUID("scorp_vWindsheild_m"),
+        tEntity::MakeUID("smith_vWindsheild_m"),
+        tEntity::MakeUID("ttWindsheild_m")
+    };
+    const tUID uid=shader->GetUID();
+    for(unsigned i=0;i<sizeof(hiddenShaderUids)/sizeof(hiddenShaderUids[0]);++i)
+        if(uid==hiddenShaderUids[i]) return true;
+    return false;
+}
 
 #ifdef RAD_XBOX
 bool IsVertexShader( tShader *shader )
@@ -128,6 +271,12 @@ tPrimGroupOptimised::~tPrimGroupOptimised()
 
 void tPrimGroupOptimised::Display()
 {
+    if(SuppressVrVehicleDriver(mShader)) return;
+    FadeVrVehicleGlass(mShader);
+    if(gCsmOpaqueReceiverOnly && mShader && mShader->mTranslucent) return;
+#if defined(RAD_ANDROID)
+    pglSetEnhancedMaterialMode(EnhancedMaterialMode(mShader));
+#endif
     P3DASSERT(mBuffer);
     pddiShader* shader = mShader->GetShader();
 
@@ -151,6 +300,9 @@ void tPrimGroupOptimised::Display()
     }
 #else
     p3d::pddi->DrawPrimBuffer( shader, mBuffer );
+#endif
+#if defined(RAD_ANDROID)
+    pglSetEnhancedMaterialMode(gEnhancedWorldMaterials ? 1 : 0);
 #endif
 }
 
@@ -203,6 +355,12 @@ tPrimGroupSkinnedOptimised::~tPrimGroupSkinnedOptimised()
 
 void tPrimGroupSkinnedOptimised::Display() 
 { 
+    if(SuppressVrVehicleDriver(mShader)) return;
+    FadeVrVehicleGlass(mShader);
+    if(gCsmOpaqueReceiverOnly && mShader && mShader->mTranslucent) return;
+#if defined(RAD_ANDROID)
+    pglSetEnhancedMaterialMode(EnhancedMaterialMode(mShader));
+#endif
     pddiExtHardwareSkinning* hwSkin = p3d::context->GetHardwareSkinning();
     hwSkin->SetMatrixCount(nMatrices);
 
@@ -212,6 +370,9 @@ void tPrimGroupSkinnedOptimised::Display()
         hwSkin->SetMatrix(i, (pddiMatrix*)matrixPalette[i]);
     }
     hwSkin->DrawSkin(GetShader()->GetShader(),GetBuffer());
+#if defined(RAD_ANDROID)
+    pglSetEnhancedMaterialMode(gEnhancedWorldMaterials ? 1 : 0);
+#endif
 }
 
 void tPrimGroupSkinnedOptimised::DisplayInstanced(unsigned count)
@@ -252,6 +413,12 @@ tPrimGroupStreamed::~tPrimGroupStreamed()
 
 void tPrimGroupStreamed::Display()
 {
+    if(SuppressVrVehicleDriver(mShader)) return;
+    FadeVrVehicleGlass(mShader);
+    if(gCsmOpaqueReceiverOnly && mShader && mShader->mTranslucent) return;
+#if defined(RAD_ANDROID)
+    pglSetEnhancedMaterialMode(EnhancedMaterialMode(mShader));
+#endif
     P3DASSERT(mVertexList);
 
     // don't send indices and weights to the stream renderer
@@ -292,7 +459,9 @@ void tPrimGroupStreamed::Display()
         vp->SetStreamProgram(0);
     }
 #endif
-    
+#if defined(RAD_ANDROID)
+    pglSetEnhancedMaterialMode(gEnhancedWorldMaterials ? 1 : 0);
+#endif
 }
 
 void tPrimGroupStreamed::SetVertexList(tVertexList* vl)
@@ -350,6 +519,9 @@ tPrimGroupSkinnedStreamed::~tPrimGroupSkinnedStreamed()
 
 void tPrimGroupSkinnedStreamed::Display(void)
 {
+    if(SuppressVrVehicleDriver(mShader)) return;
+    FadeVrVehicleGlass(mShader);
+    if(gCsmOpaqueReceiverOnly && mShader && mShader->mTranslucent) return;
     int count = mVertexCount;
     SkinVertex *verts = mVertices;
     rmt::Vector* outNormals = mVertexList->GetNormals();
@@ -508,6 +680,12 @@ bool tPrimGroupSkinnedPC::SetVertices(unsigned start, unsigned count, rmt::Vecto
 
 void tPrimGroupSkinnedPC::Display(void)
 {
+	if(SuppressVrVehicleDriver(mShader)) return;
+	FadeVrVehicleGlass(mShader);
+	if(gCsmOpaqueReceiverOnly && mShader && mShader->mTranslucent) return;
+#if defined(RAD_ANDROID)
+    pglSetEnhancedMaterialMode(EnhancedMaterialMode(mShader));
+#endif
 	pddiPrimBufferStream *stream;
 	
     int count = mVertexCount;
@@ -614,6 +792,9 @@ void tPrimGroupSkinnedPC::Display(void)
 	}
 	//buffer rendering
 	p3d::pddi->DrawPrimBuffer(mShader->GetShader(), mBuffer);
+#if defined(RAD_ANDROID)
+    pglSetEnhancedMaterialMode(gEnhancedWorldMaterials ? 1 : 0);
+#endif
 
 }
 

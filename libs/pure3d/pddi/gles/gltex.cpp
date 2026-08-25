@@ -5,10 +5,12 @@
 #include <pddi/gles/gl.hpp>
 #include <pddi/gles/gldisplay.hpp>
 #include <pddi/gles/gltex.hpp>
+#include <string.h>
 #include <pddi/gles/glcon.hpp>
 #include <pddi/gles/decompress.hpp>
 
 #include <math.h>
+#include <string.h>
 #include <pddi/base/debug.hpp>
 #include <radmemory.hpp>
 
@@ -97,28 +99,52 @@ void pglTexture::SetGLState(void)
         glGenTextures(1,&gltexture);
         glBindTexture(GL_TEXTURE_2D, gltexture);
 
-//      if(nMipMap == 0)
         if (type == PDDI_TEXTYPE_DXT1 || type == PDDI_TEXTYPE_DXT3 || type == PDDI_TEXTYPE_DXT5)
         {
 #ifdef RAD_VITAGL
-            unsigned int blocksize = lock.format == PDDI_PIXEL_DXT1 ? 8 : 16;
-            GLenum internalFormat = lock.format == PDDI_PIXEL_DXT5 ? GL_COMPRESSED_RGBA_S3TC_DXT5_EXT :
+            const unsigned int blocksize = lock.format == PDDI_PIXEL_DXT1 ? 8 : 16;
+            const GLenum internalFormat = lock.format == PDDI_PIXEL_DXT5 ? GL_COMPRESSED_RGBA_S3TC_DXT5_EXT :
                 lock.format == PDDI_PIXEL_DXT3 ? GL_COMPRESSED_RGBA_S3TC_DXT3_EXT : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
-            glCompressedTexImage2D(GL_TEXTURE_2D, 0, internalFormat, xSize,
-                ySize, 0, ceil(xSize/4.0)*ceil(ySize/4.0)*blocksize, (GLvoid*)bits[0]);
+            for(int level=0; level<=nMipMap; ++level)
+            {
+                const int width=rmt::Max(1,xSize>>level);
+                const int height=rmt::Max(1,ySize>>level);
+                glCompressedTexImage2D(GL_TEXTURE_2D,level,internalFormat,width,
+                    height,0,static_cast<GLsizei>(ceil(width/4.0)*ceil(height/4.0)*blocksize),bits[level]);
+            }
 #else
-            unsigned char* image = new unsigned char[xSize * ySize * 4];
-            unsigned int blocksize = lock.format == PDDI_PIXEL_DXT1 ? 8 : 16;
-            if (type == PDDI_TEXTYPE_DXT1)
-                BlockDecompressImageBC1(xSize, ySize, (const uint8_t*)bits[0], image);
-            else if (type == PDDI_TEXTYPE_DXT3)
-                BlockDecompressImageBC2(xSize, ySize, (const uint8_t*)bits[0], image);
-            else if( type == PDDI_TEXTYPE_DXT5)
-                BlockDecompressImageBC3(xSize, ySize, (const uint8_t*)bits[0], image);
-            glTexImage2D(GL_TEXTURE_2D, 0, PickPixelFormat(lock.format), xSize,
-                ySize, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                image);
-            delete [] image;
+            // Android cannot sample the source DXT payload directly on every
+            // supported device, but the P3D file still contains all authored
+            // mip levels. Decompress and upload each one rather than silently
+            // discarding everything except level zero.
+            for(int level=0; level<=nMipMap; ++level)
+            {
+                const int width=rmt::Max(1,xSize>>level);
+                const int height=rmt::Max(1,ySize>>level);
+                // The legacy decoder writes a complete 4x4 block even for
+                // the terminal 2x2 and 1x1 mip levels. Decode those levels to
+                // padded storage, then crop to a tightly packed GLES upload.
+                const int decodedWidth=rmt::Max(4,width);
+                const int decodedHeight=rmt::Max(4,height);
+                unsigned char* decoded=new unsigned char[decodedWidth*decodedHeight*4];
+                if(type==PDDI_TEXTYPE_DXT1)
+                    BlockDecompressImageBC1(decodedWidth,decodedHeight,reinterpret_cast<const uint8_t*>(bits[level]),decoded);
+                else if(type==PDDI_TEXTYPE_DXT3)
+                    BlockDecompressImageBC2(decodedWidth,decodedHeight,reinterpret_cast<const uint8_t*>(bits[level]),decoded);
+                else
+                    BlockDecompressImageBC3(decodedWidth,decodedHeight,reinterpret_cast<const uint8_t*>(bits[level]),decoded);
+                unsigned char* image=decoded;
+                if(decodedWidth!=width || decodedHeight!=height)
+                {
+                    image=new unsigned char[width*height*4];
+                    for(int y=0; y<height; ++y)
+                        memcpy(image+y*width*4,decoded+y*decodedWidth*4,width*4);
+                }
+                glTexImage2D(GL_TEXTURE_2D,level,PickPixelFormat(lock.format),width,
+                    height,0,GL_RGBA,GL_UNSIGNED_BYTE,image);
+                if(image!=decoded) delete [] image;
+                delete [] decoded;
+            }
 #endif
         }
 #ifdef RAD_VITAGL
@@ -130,55 +156,14 @@ void pglTexture::SetGLState(void)
 #endif
         else
         {
-            glTexImage2D(GL_TEXTURE_2D, 0, PickPixelFormat(lock.format), xSize,
-                ySize, 0, lock.native ? GL_BGRA_EXT : GL_RGBA, GL_UNSIGNED_BYTE,
-                (GLvoid *)bits[0]);
-        }
-        /*
-        else
-        {
-
-            int tmpMipMap = nMipMap;
-            tmpMipMap--;
-            if(tmpMipMap < 0)
-                tmpMipMap = 0;
-
-            int i = 0;
-            int width = xSize;
-            int height = ySize;
-            bool bottomed = false;
-            bool done = false;
-
-            while(!done)
+            for(int level=0; level<=nMipMap; ++level)
             {
-                char* data = bits[i];
-                if(i > tmpMipMap)
-                    data = bits[tmpMipMap];
-
-                glTexImage2D(GL_TEXTURE_2D, i, GL_RGBA8, xSize >> i,
-                    ySize >> i, 0, lock.native ? GL_BGRA_EXT : GL_RGBA, GL_UNSIGNED_BYTE,
-                    (GLvoid *)data);
-
-                done = (width == 1) || (height == 1);
-
-                width >>= 1;
-                if(width < 1) 
-                {
-                    width = 1;
-                    bottomed = true;
-                }
-
-                height >>= 1;
-                if(height < 1) 
-                {
-                    height = 1;
-                    bottomed = true;
-                }
-
-                i++;
+                const int width=rmt::Max(1,xSize>>level);
+                const int height=rmt::Max(1,ySize>>level);
+                glTexImage2D(GL_TEXTURE_2D,level,PickPixelFormat(lock.format),width,
+                    height,0,lock.native ? GL_BGRA_EXT : GL_RGBA,GL_UNSIGNED_BYTE,bits[level]);
             }
         }
-        */
 
         valid = true;
     }
@@ -290,6 +275,9 @@ bool pglTexture::Create(int x, int y, int bpp, int alphaDepth, int nMip, pddiTex
 
 pglTexture::pglTexture(pglContext* c)
 {
+#if defined(RAD_ANDROID)
+    sourceName[0]='\0';
+#endif
     context = c;
     contextID = c->contextID;
     bits = NULL;
@@ -297,6 +285,20 @@ pglTexture::pglTexture(pglContext* c)
     priority = 15;
     valid = false;
 }
+
+#if defined(RAD_ANDROID)
+void pglTexture::SetSourceName(const char* name)
+{
+    if(!name) { sourceName[0]='\0'; return; }
+    strncpy(sourceName,name,sizeof(sourceName)-1);
+    sourceName[sizeof(sourceName)-1]='\0';
+}
+
+void pglSetTextureSourceName(pddiTexture* texture,const char* name)
+{
+    if(texture) static_cast<pglTexture*>(texture)->SetSourceName(name);
+}
+#endif
 
 pglTexture::~pglTexture()
 {

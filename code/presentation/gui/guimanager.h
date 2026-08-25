@@ -116,6 +116,7 @@ class CGuiManager : public CGuiEntity,
 
         CGuiWindow::eGuiWindowID GetPreviousScreen( int fromCurrentScreen = 0 ) const;
         CGuiWindow::eGuiWindowID GetCurrentScreen() const;
+        CGuiWindow::eGuiWindowID GetNextScreen() const { return m_nextScreen; }
 
         // Implements EventListener
         virtual void HandleEvent( EventEnum id, void* pEventData ) {};

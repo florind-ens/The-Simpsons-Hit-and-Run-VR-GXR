@@ -66,6 +66,7 @@ public:
     bool Init( const char* name, Vehicle* owner, int i);
 
     void Display();
+    void DisplayCsmReceiver();
     //void DisplaySkids();
     void UpdateSkids();
     void SetSkidValues(int wheel, float intensity, rmt::Vector& normal, eTerrainType terrainType );
@@ -86,10 +87,14 @@ public:
 
     void ShowReverseLights();
     void HideReverseLights();
+    bool AreBrakeLightsOn() const { return mBrakeLightsOn; }
+    bool GetRearLightWorldPositions(bool reverse,rmt::Vector positions[2]) const;
 
     void SetTrafficBodyColour( pddiColour colour );
     void SetShadowAdjustments( float Adjustments[ 4 ][ 2 ] );
     void SetShininess( unsigned char EnvRef ) { m_EnvRef = EnvRef; }
+    void AddCollisionDent(const rmt::Vector& worldPoint,float impact);
+    void ResetCollisionDeformation();
 
     void SetFadeAlpha( int fade );
 
@@ -317,6 +322,9 @@ private:
     rmt::Matrix m_CollectibleTransform;
 
     unsigned char m_EnvRef;
+    rmt::Vector mDentPositions[4];
+    float mDentDepths[4];
+    int mDentCount;
 };
 
 #endif  // _GEOMETRYVEHICLE_HPP

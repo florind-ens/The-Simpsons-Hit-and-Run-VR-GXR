@@ -278,16 +278,9 @@ MEMTRACK_PUSH_GROUP( "CGuiScreenPauseSettings" );
         }
 
         Scrooby::Sprite* pTutorialLArrow = pTutorialGroup->GetSprite( "Tutorial_LArrow" );
-        if( pTutorialLArrow != NULL )
-        {
-            pTutorialLArrow->SetVisible( false );
-        }
-
+        if( pTutorialLArrow != NULL ) pTutorialLArrow->SetVisible( false );
         Scrooby::Sprite* pTutorialRArrow = pTutorialGroup->GetSprite( "Tutorial_RArrow" );
-        if( pTutorialRArrow != NULL )
-        {
-            pTutorialRArrow->SetVisible( false );
-        }
+        if( pTutorialRArrow != NULL ) pTutorialRArrow->SetVisible( false );
     }
 #endif
 

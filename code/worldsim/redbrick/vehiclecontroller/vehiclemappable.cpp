@@ -6,6 +6,9 @@
 // Temp.
 //
 #include <worldsim/avatarmanager.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 
 #ifdef RAD_PC
 #include <gameflow/gameflow.h>
@@ -116,12 +119,25 @@ void VehicleMappable::LoadControllerMappings( unsigned int controllerId )
 	Map( "RightTrigger", Gas, 0, controllerId );
   	Map( "A", Gas, 0, controllerId );
 
-    Map( "B", Brake, 0, controllerId );
+#if defined(RAD_ANDROID)
+    // B is the dedicated handbrake while driving in VR. Original mode keeps
+    // the legacy B brake binding; the left trigger remains brake/reverse in
+    // both modes.
+    if(SharOpenXR::IsVrModeEnabled())
+        Map( "B", HandBrake, 0, controllerId );
+    else
+        Map( "B", Brake, 0, controllerId );
+#else
+	Map( "B", Brake, 0, controllerId );
+#endif
     Map( "LeftTrigger", Brake, 0, controllerId );
 
-	Map( "X", HandBrake, 0, controllerId );
+	// Quest: right grip is the handbrake in both VR and Original modes.
+	Map( "White", HandBrake, 0, controllerId );
 
-    Map( "White", Horn, 0, controllerId );
+    // X is the left controller's lower face button and does not overlap the
+    // Y/action/exit path.
+    Map( "X", Horn, 0, controllerId );
     Map( "LeftThumb", Horn, 0, controllerId );
 
 	Map( "Back", Reset, 0, controllerId );

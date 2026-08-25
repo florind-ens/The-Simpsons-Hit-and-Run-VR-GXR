@@ -203,6 +203,7 @@ public: // MEMBERS
     // Implements CollisionEntityDSG
     //
     virtual void Display(void);
+    void DisplayCsmCaster(void);
     virtual rmt::Vector*       pPosition() ;
     virtual const rmt::Vector& rPosition() ;
     virtual void GetPosition( rmt::Vector* ipPosn ) ;
@@ -307,6 +308,8 @@ public: // MEMBERS
     float GetYAdjust();
 
     void Kick();
+    bool VrPunch(const rmt::Vector& start, const rmt::Vector& end,
+                 const rmt::Vector& direction);
     void Slam();
 
     void SetFadeAlpha( int fadeAlpha );
@@ -440,6 +443,11 @@ private: // MEMBERS
     // A pointer to the renderable object.
     //
     CharacterRenderable* mpCharacterRenderable;
+    rmt::Vector mLastRenderRootPos;
+    bool mHasLastRenderRootPos;
+    rmt::Matrix* mpCsmPoseMatrices;
+    rmt::Matrix* mpCsmRestoreMatrices;
+    int mCsmPoseMatrixCount;
 
     // A pointer to the choreo::Puppet
     //

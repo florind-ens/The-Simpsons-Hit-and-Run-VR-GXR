@@ -10,6 +10,10 @@
 #include <pddi/pddi.hpp>
 #include <camera/supercammanager.h>
 #include <contexts/bootupcontext.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#include <p3d/primgroup.hpp>
+#endif
 
 // Hack.
 //  [6/27/2002]
@@ -156,7 +160,21 @@ END_PROFILE("CharRender Cull")
     float dist = (pCam->GetNearPlane() + 1.5f);
     dist *= dist;
 
-    if ( sqrDistFromCam < dist )
+    bool hideForNearCamera=sqrDistFromCam<dist;
+#if defined(RAD_ANDROID)
+    if(hideForNearCamera && SharOpenXR::IsVrModeEnabled())
+    {
+        // The original third-person renderer hides every character within
+        // nearPlane+1.5m. In first-person VR that makes an NPC disappear as
+        // the player walks up to them. Keep this only for the local player,
+        // whose body is intentionally hidden by the current VR camera mode.
+        Character* player=GetCharacterManager()->GetCharacter(0);
+        rmt::Vector playerPosition;
+        if(player) player->GetPosition(playerPosition);
+        hideForNearCamera=player && (playerPosition-(iPosn+camPosn)).MagnitudeSqr()<0.25f;
+    }
+#endif
+    if ( hideForNearCamera )
     {
         return;
     }
@@ -552,7 +570,13 @@ void CharacterRenderable::DisplayModel( tPose* pose )
         draw->ProcessShaders( blendAlpha );
         tShaderIntBroadcast emissiveFade( PDDI_SP_EMISSIVEALPHA, mFadeAlpha );
         draw->ProcessShaders( emissiveFade );
+#if defined(RAD_ANDROID)
+        p3dSetEnhancedCharacterMaterials(SharOpenXR::IsEnhancedMaterialsEnabled());
+#endif
         draw->Display( pose );
+#if defined(RAD_ANDROID)
+        p3dSetEnhancedCharacterMaterials(false);
+#endif
     }
 }
 

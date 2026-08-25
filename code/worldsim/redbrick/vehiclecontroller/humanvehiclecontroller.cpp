@@ -1,4 +1,7 @@
 #include <worldsim/redbrick/vehiclecontroller/humanvehiclecontroller.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 #include <worldsim/redbrick/vehiclecontroller/vehiclemappable.h>
 #include <worldsim/redbrick/vehicle.h>
 #include <worldsim/vehiclecentral.h>
@@ -203,6 +206,14 @@ float HumanVehicleController::GetBrake( void ) const
 
 float HumanVehicleController::GetSteering( bool& isWheel ) const
 {
+#if defined(RAD_ANDROID)
+    float vrWheelValue=0.0f;
+    if(SharOpenXR::GetVrSteeringWheelValue(&vrWheelValue))
+    {
+        isWheel=true;
+        return vrWheelValue;
+    }
+#endif
 #ifdef RAD_PS2
     isWheel = false;
 

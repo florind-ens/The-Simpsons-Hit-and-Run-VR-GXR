@@ -340,13 +340,15 @@ bool Win32Platform::InitializeWindow()
     // ------------------------------------------------------------
 #ifdef RAD_ANDROID
 
-    // Attempt #1 : GLES3
+    // Quest multiview shaders use GLSL ES 3.20 and texture-array targets.
+    // Request the actual API level instead of relying on a driver-created
+    // GLES 3.0 context being silently promoted.
 #if SDL_MAJOR_VERSION < 3
     SDL_GL_ResetAttributes();
 #endif
     SDL_GL_SetAttribute( SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES );
     SDL_GL_SetAttribute( SDL_GL_CONTEXT_MAJOR_VERSION, 3 );
-    SDL_GL_SetAttribute( SDL_GL_CONTEXT_MINOR_VERSION, 0 );
+    SDL_GL_SetAttribute( SDL_GL_CONTEXT_MINOR_VERSION, 2 );
 
 #else // !RAD_ANDROID
 

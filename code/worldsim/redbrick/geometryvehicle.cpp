@@ -13,6 +13,10 @@
 #include <contexts/bootupcontext.h>
 #include <worldsim/character/characterrenderable.h>
 #include <worldsim/redbrick/geometryvehicle.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+extern int gPglCsmBillboardMode;
+#endif
 #include <worldsim/redbrick/vehicle.h>
 #include <worldsim/redbrick/wheel.h>
 #include <worldsim/avatar.h>
@@ -32,9 +36,14 @@
 #include <p3d/view.hpp>
 #include <p3d/effects/particlesystem.hpp>
 #include <pddi/pddi.hpp>
+#if defined(RAD_ANDROID)
+// Kept as a renderer boundary here so game code does not depend on GLES headers.
+void pglSetVehicleDeformation(const float* dents,int count);
+#endif
 #include <p3d/utility.hpp>
 #include <typeinfo>
 #include <p3d/anim/visibilityanimation.hpp>
+#include <p3d/primgroup.hpp>
 
 #include <raddebug.hpp>
 #include <raddebugwatch.hpp>
@@ -110,6 +119,8 @@ GeometryVehicle::GeometryVehicle():
     mCompositeDrawable = 0;
 
     mChassisGeometry = 0;
+    mDentCount = 0;
+    for(int dent=0;dent<4;++dent) mDentDepths[dent]=0.0f;
 
 
     mAnim = 0;
@@ -734,7 +745,20 @@ BEGIN_PROFILE("GeometryVehicle::Display SetUp")
     rmt::Vector vehicleVelocity;
     mVehicleOwner->GetVelocity( &vehicleVelocity );
 
-    if(mEngineParticleAttr.mType != ParticleEnum::eNull)
+    bool generateParticles = true;
+#if defined(RAD_ANDROID)
+    if( SharOpenXR::IsVrModeEnabled() )
+    {
+        // Display is invoked for both stereo eyes and for every CSM caster
+        // pass. Particle simulation is a game-frame side effect, so execute it
+        // only during the left eye's normal colour pass. Previously a single
+        // damaged car emitted up to five copies of every smoke particle.
+        generateParticles = !SharOpenXR::IsRightEyeRendering() &&
+                            gPglCsmBillboardMode == 0;
+    }
+#endif
+
+    if(generateParticles && mEngineParticleAttr.mType != ParticleEnum::eNull)
     {
         // Figure out which to draw first, the smoke or the car.
         //We do this by transforming the SmokeOffset into world space and then dot product with the
@@ -763,7 +787,7 @@ BEGIN_PROFILE("GeometryVehicle::Display SetUp")
             // TODO - HOW ABOUT TRAFFIC - WITH THE ONE-TIME POOF!! DON'T DRAW CONTINUOUSLY
         }
     }
-	if ( mSpecialEffect != ParticleEnum::eNull )
+	if ( generateParticles && mSpecialEffect != ParticleEnum::eNull )
 	{
 		ParticleAttributes attr;
 		attr.mType = mSpecialEffect;
@@ -777,7 +801,7 @@ BEGIN_PROFILE("GeometryVehicle::Display SetUp")
     // 31.25 (trails too long)
     //mTailPipeParticleAttr.mVelocity = vehicleVelocity / 29.0f;
 
-    if ( mTailPipeParticleAttr.mType != ParticleEnum::eNull )
+    if ( generateParticles && mTailPipeParticleAttr.mType != ParticleEnum::eNull )
     {
         mParticleEmitter->Generate( VehicleParticleEmitter::eRightTailPipe,
             mTailPipeParticleAttr, mVehicleOwner->mTransform );
@@ -786,12 +810,12 @@ BEGIN_PROFILE("GeometryVehicle::Display SetUp")
             mTailPipeParticleAttr, mVehicleOwner->mTransform );
     }
 
-    if(mLeftWheelParticleAttr.mType != ParticleEnum::eNull)
+    if(generateParticles && mLeftWheelParticleAttr.mType != ParticleEnum::eNull)
     {
         mParticleEmitter->Generate( VehicleParticleEmitter::eLeftBackTire,
                                     mLeftWheelParticleAttr, mVehicleOwner->mTransform);       
     }
-    if(mRightWheelParticleAttr.mType != ParticleEnum::eNull)
+    if(generateParticles && mRightWheelParticleAttr.mType != ParticleEnum::eNull)
     {
         mParticleEmitter->Generate( VehicleParticleEmitter::eRightBackTire,
                                     mRightWheelParticleAttr, mVehicleOwner->mTransform);       
@@ -1074,15 +1098,50 @@ END_PROFILE("GeometryVehicle::Ghost")
 BEGIN_PROFILE("GeometryVehicle::CompDraw->Disp")
     if( smokeFirst )
     {
-        GetSparkleManager()->Render( Sparkle::SRM_SortedOnly );
+#if defined(RAD_ANDROID)
+        // In VR the world layer submits sorted smoke once per eye. Rendering
+        // the complete shared smoke array here repeated it for every visible
+        // vehicle and multiplied transparent overdraw catastrophically.
+        if(!SharOpenXR::IsVrModeEnabled())
+#endif
+            GetSparkleManager()->Render( Sparkle::SRM_SortedOnly );
     }
     if( sbDrawVehicle )
     {
+#if defined(RAD_ANDROID)
+        // Apply the same unobtrusive glass treatment to every vehicle in VR.
+        // The scope is closed immediately so shared shaders retain their
+        // normal appearance for non-vehicle rendering and Original mode.
+        p3dSetVrVehicleGlassFaded(SharOpenXR::IsVrModeEnabled());
+        const bool suppressEmbeddedDriver=SharOpenXR::IsVrModeEnabled() &&
+                                          mVehicleOwner->IsUserDrivingCar();
+        p3dSetVrVehicleDriverSuppressed(suppressEmbeddedDriver);
+        p3dSetEnhancedVehicleMaterials(SharOpenXR::IsVrModeEnabled() &&
+                                       SharOpenXR::IsEnhancedMaterialsEnabled());
+        float dents[16]={0.0f};
+        for(int dent=0;dent<mDentCount;++dent)
+        {
+            dents[dent*4+0]=mDentPositions[dent].x;
+            dents[dent*4+1]=mDentPositions[dent].y;
+            dents[dent*4+2]=mDentPositions[dent].z;
+            dents[dent*4+3]=mDentDepths[dent];
+        }
+        pglSetVehicleDeformation(dents,mDentCount);
+#endif
         mCompositeDrawable->Display();
+#if defined(RAD_ANDROID)
+        p3dSetEnhancedVehicleMaterials(false);
+        pglSetVehicleDeformation(NULL,0);
+        p3dSetVrVehicleDriverSuppressed(false);
+        p3dSetVrVehicleGlassFaded(false);
+#endif
     }
     if( !smokeFirst )
     {
-        GetSparkleManager()->Render( Sparkle::SRM_SortedOnly );
+#if defined(RAD_ANDROID)
+        if(!SharOpenXR::IsVrModeEnabled())
+#endif
+            GetSparkleManager()->Render( Sparkle::SRM_SortedOnly );
     }
     if( m_Collectible )
     {
@@ -3134,6 +3193,125 @@ void GeometryVehicle::FadeRoof( bool fade )
 {
     rAssert( 0 <= INCAR_ROOF_ALPHA && INCAR_ROOF_ALPHA <= 255 );
     mRoofTargetAlpha = (fade)? INCAR_ROOF_ALPHA : 255;
+}
+
+bool GeometryVehicle::GetRearLightWorldPositions(bool reverse,rmt::Vector positions[2]) const
+{
+    if(!positions || !mCompositeDrawable || !mVehicleOwner) return false;
+    tPose* pose=mCompositeDrawable->GetPose();
+    if(!pose) return false;
+    const int* joints=reverse?mReverseLightJoints:mBrakeLightJoints;
+    int count=0;
+    rmt::Vector local[4];
+    rmt::Matrix worldToVehicle=mVehicleOwner->GetTransform();
+    worldToVehicle.Invert();
+    for(int i=0;i<4;++i)
+    {
+        if(joints[i]<0) continue;
+        // Pose joint worldMatrix already includes the drawable/vehicle world
+        // transform. Convert it back to vehicle-local space before clustering;
+        // the common transform below then applies the vehicle transform once.
+        worldToVehicle.Transform(pose->GetJoint(joints[i])->worldMatrix.Row(3),
+                                 &local[count++]);
+    }
+    if(count==0)
+    {
+        // Some traffic variants bake the glowing polygons into their body and
+        // have no brake billboard props, so FindBrakeLightBillboardJoints
+        // cannot retain a joint. Keep lighting functional using the collision
+        // extents as a stable car-local fallback.
+        const rmt::Vector extents=mVehicleOwner->GetExtents();
+        local[0].Set(-extents.x*0.62f,extents.y*0.18f,-extents.z*0.88f);
+        local[1].Set( extents.x*0.62f,extents.y*0.18f,-extents.z*0.88f);
+        count=2;
+    }
+    // Most cars contain two joints. Four-light cars are collapsed into left
+    // and right clusters to keep Optimized and Max bounded to two emitters.
+    rmt::Vector a(0.0f,0.0f,0.0f),b(0.0f,0.0f,0.0f);
+    int ac=0,bc=0;
+    for(int i=0;i<count;++i)
+    {
+        if(local[i].x<0.0f){ a+=local[i]; ++ac; }
+        else { b+=local[i]; ++bc; }
+    }
+    if(!ac){ a=local[0]; ac=1; }
+    if(!bc){ b=count>1?local[count-1]:local[0]; bc=1; }
+    a*=1.0f/static_cast<float>(ac); b*=1.0f/static_cast<float>(bc);
+    mVehicleOwner->GetTransform().Transform(a,&positions[0]);
+    mVehicleOwner->GetTransform().Transform(b,&positions[1]);
+    return true;
+}
+
+void GeometryVehicle::AddCollisionDent(const rmt::Vector& worldPoint,float impact)
+{
+#if defined(RAD_ANDROID)
+    if(impact<0.075f) return;
+    rmt::Matrix worldToCar=mVehicleOwner->GetTransform();
+    worldToCar.Invert();
+    rmt::Vector localPoint;
+    worldToCar.Transform(worldPoint,&localPoint);
+
+    const float mergeRadiusSqr=0.55f*0.55f;
+    int slot=-1;
+    for(int i=0;i<mDentCount;++i)
+    {
+        rmt::Vector delta=localPoint-mDentPositions[i];
+        if(delta.MagnitudeSqr()<mergeRadiusSqr) { slot=i; break; }
+    }
+    if(slot<0)
+    {
+        if(mDentCount<4) slot=mDentCount++;
+        else
+        {
+            slot=0;
+            for(int i=1;i<4;++i) if(mDentDepths[i]<mDentDepths[slot]) slot=i;
+        }
+        mDentPositions[slot]=localPoint;
+    }
+    // Broad, low-poly traffic bodies need a larger affected region than the
+    // detailed player cars. Depth is deliberately pronounced for VR viewing.
+    const float added=rmt::Clamp((impact-0.075f)*0.84f,0.030f,0.36f);
+    mDentDepths[slot]=rmt::Clamp(mDentDepths[slot]+added,0.0f,0.84f);
+#endif
+}
+
+void GeometryVehicle::ResetCollisionDeformation()
+{
+    mDentCount=0;
+    for(int i=0;i<4;++i)
+    {
+        mDentPositions[i].Set(0.0f,0.0f,0.0f);
+        mDentDepths[i]=0.0f;
+    }
+}
+
+void GeometryVehicle::DisplayCsmReceiver()
+{
+    // The normal display earlier in the frame has already updated the pose.
+    // Submit only the composite mesh: no particles, reflections, collectibles
+    // or other stateful vehicle effects belong in the receiver overlay.
+    if(sbDrawVehicle && mCompositeDrawable)
+    {
+#if defined(RAD_ANDROID)
+        const bool suppressEmbeddedDriver=SharOpenXR::IsVrModeEnabled() &&
+                                          mVehicleOwner->IsUserDrivingCar();
+        p3dSetVrVehicleDriverSuppressed(suppressEmbeddedDriver);
+        float dents[16]={0.0f};
+        for(int dent=0;dent<mDentCount;++dent)
+        {
+            dents[dent*4+0]=mDentPositions[dent].x;
+            dents[dent*4+1]=mDentPositions[dent].y;
+            dents[dent*4+2]=mDentPositions[dent].z;
+            dents[dent*4+3]=mDentDepths[dent];
+        }
+        pglSetVehicleDeformation(dents,mDentCount);
+#endif
+        mCompositeDrawable->Display();
+#if defined(RAD_ANDROID)
+        pglSetVehicleDeformation(NULL,0);
+        p3dSetVrVehicleDriverSuppressed(false);
+#endif
+    }
 }
 
 

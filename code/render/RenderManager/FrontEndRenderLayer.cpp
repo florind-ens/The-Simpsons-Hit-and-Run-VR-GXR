@@ -15,6 +15,7 @@
 #include <raddebug.hpp>
 #include <p3d/view.hpp>
 #include <p3d/billboardobject.hpp>
+#include <p3d/utility.hpp>
 
 //========================================
 // Project Includes
@@ -22,6 +23,8 @@
 #include <render/RenderManager/FrontEndRenderLayer.h>
 #include <debug/profiler.h>
 #include <presentation/gui/guisystem.h>
+#include <presentation/gui/guimanager.h>
+#include <presentation/gui/guiwindow.h>
 #include <presentation/presentation.h>
 #include <gameflow/gameflow.h>
 #include <contexts/contextenum.h>
@@ -34,6 +37,7 @@
 #ifdef RAD_ANDROID
 #include <presentation/fmvplayer/fmvplayer.h>
 #include <input/touch/touchhudrenderer.h>
+#include <vr/openxrmanager.h>
 #endif
 
 
@@ -111,19 +115,35 @@ FrontEndRenderLayer::~FrontEndRenderLayer()
 
 void FrontEndRenderLayer::DrawCoinObject()
 {
+#if defined(RAD_ANDROID)
+    // Coins flying into the counter are rendered separately from Scrooby but
+    // belong on the same converged head-locked UI plane.
+    SharOpenXR::SetWorldRendering( false );
+    SharOpenXR::SetEnhancedUiConvergence( true );
+#endif
     // Render HUD coin effects.
     if((GetGameFlow()->GetCurrentContext() == CONTEXT_GAMEPLAY ||
         GetGameFlow()->GetCurrentContext() == CONTEXT_PAUSE) &&
 	   !GetPresentationManager()->IsBusy())
 	{
+#if defined(RAD_ANDROID)
+        const bool captureVrCoin=GetCoinManager()->IsHUDCoinVisible() &&
+            SharOpenXR::BeginMissionHudCapture(4,0,0,640,480);
+#endif
         GetCoinManager()->HUDRender();
+#if defined(RAD_ANDROID)
+        if(captureVrCoin) SharOpenXR::EndMissionHudCapture();
+#endif
         GetSparkleManager()->HUDRender();
         //??? GetHitnRunManager()->HUDRender();
     }
 	else
 	{
-		GetCoinManager()->ClearHUDCoins();
+        GetCoinManager()->ClearHUDCoins();
 	}
+#if defined(RAD_ANDROID)
+    SharOpenXR::SetEnhancedUiConvergence( false );
+#endif
 
 }
 //************************************************************************
@@ -208,7 +228,15 @@ void FrontEndRenderLayer::Render()
     PresentationManager* pm = GetPresentationManager();
     if( pm && pm->GetFMVPlayer() )
     {
+#if defined(RAD_ANDROID)
+        // The Android decoder is serviced independently at the OpenXR frame
+        // rate. AnimationPlayer::IsPlaying() can be false while its decoder
+        // is actively presenting, which allowed the legacy head-locked GUI
+        // mask to be drawn over the world-locked movie plane.
+        fmvPlaying = pm->GetFMVPlayer()->IsDecoderPlaying();
+#else
         fmvPlaying = pm->GetFMVPlayer()->IsPlaying();
+#endif
     }
 
     for( unsigned int view = 0; view < mNumViews; view++ )
@@ -274,7 +302,11 @@ void FrontEndRenderLayer::Render()
     PresentationManager* pm = GetPresentationManager();
     if( pm && pm->GetFMVPlayer() )
     {
+#if defined(RAD_ANDROID)
+        fmvPlaying = pm->GetFMVPlayer()->IsDecoderPlaying();
+#else
         fmvPlaying = pm->GetFMVPlayer()->IsPlaying();
+#endif
     }
 
     if( fmvPlaying )
@@ -285,6 +317,26 @@ void FrontEndRenderLayer::Render()
         END_PROFILE( "FE Render" );
         return;
     }
+
+#if defined(RAD_ANDROID)
+    const ContextEnum guiContext=GetGameFlow()->GetCurrentContext();
+    CGuiManager* guiManager=GetGuiSystem()->GetCurrentManager();
+    const CGuiWindow::eGuiWindowID screenId=guiManager?
+        guiManager->GetCurrentScreen():CGuiWindow::GUI_WINDOW_ID_UNDEFINED;
+    // Preserve the original VR frontend split: the animated main menu uses
+    // the stereo 3D path, while boot/loading/pause and nested frontend pages
+    // are presented on the world-locked GUI panel.
+    const bool loadingScreen=
+        screenId==CGuiWindow::GUI_SCREEN_ID_LOADING ||
+        screenId==CGuiWindow::GUI_SCREEN_ID_LOADING_FE;
+    const bool spatialFrontend=guiContext==CONTEXT_BOOTUP ||
+        guiContext==CONTEXT_PAUSE ||
+        loadingScreen ||
+        (guiContext==CONTEXT_FRONTEND &&
+         screenId!=CGuiWindow::GUI_SCREEN_ID_MAIN_MENU);
+    SharOpenXR::SetFrontendPlaneActive(spatialFrontend);
+    SharOpenXR::SetFrontendPlaneRendering(spatialFrontend);
+#endif
 
     for( unsigned int view = 0; view < mNumViews; view++ )
     {
@@ -315,9 +367,8 @@ void FrontEndRenderLayer::Render()
             DrawCoinObject();
         
         
-        #ifdef RAD_ANDROID
-        TouchHudRenderer::GetInstance().Render(); // Excelente sitio para renderizar pero hay que vigilar el caso de cinematica
-        #endif
+        // Touch controls are intentionally not drawn in the standalone VR
+        // build; input comes from the OpenXR motion controllers.
         HeapMgr()->PopHeap( GMA_TEMP );
 
         mpView[ view ]->EndRender();
@@ -330,6 +381,11 @@ void FrontEndRenderLayer::Render()
 #endif
 
     END_PROFILE( "FE Render" );
+
+#if defined(RAD_ANDROID)
+    SharOpenXR::SetFrontendPlaneRendering(false);
+#endif
+
 }
 
 

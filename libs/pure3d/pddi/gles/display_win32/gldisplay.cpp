@@ -518,7 +518,7 @@ void pglDisplay::SwapBuffers(void)
 {
     SDL_GL_SwapWindow(win);
     reset = false;
-    #ifdef RAD_ANDROID
+    #if 0 // Standalone OpenXR uses xrWaitFrame; do not impose the old 60 FPS cap.
     /*
      * Manual 60 FPS cap for Android.
      *

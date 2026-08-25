@@ -70,6 +70,9 @@
 
 #ifdef RAD_ANDROID
 #include <input/touch/touchinputmodemanager.h>
+#include <vr/openxrmanager.h>
+void ScroobySetVrRadarGroup(Scrooby::Group* group);
+void ScroobySetVrMissionHudGroup(unsigned slot,Scrooby::Group* group);
 #endif
 //===========================================================================
 // Global Data, Local Data, Local Classes
@@ -219,6 +222,7 @@ MEMTRACK_PUSH_GROUP( "CGUIScreenHud" );
     #ifdef RAD_ANDROID
     m_androidHudMapLayoutInitialized = false;
     m_androidHudMapTouchLayoutActive = false;
+    m_androidHudMapVrLayoutActive = false;
     #endif
 /*
     bool enableFadeIn = (GetGameFlow()->GetCurrentContext() == CONTEXT_LOADING_GAMEPLAY );
@@ -236,6 +240,9 @@ MEMTRACK_PUSH_GROUP( "CGUIScreenHud" );
 
     m_missionOverlays = pPage->GetGroup( "MissionOverlays" );
     rAssert( m_missionOverlays != NULL );
+#ifdef RAD_ANDROID
+    ScroobySetVrMissionHudGroup( 0, pPage->GetGroup( "MissionObjective" ) );
+#endif
 
     Scrooby::Group* pGroup = NULL;
 
@@ -245,6 +252,9 @@ MEMTRACK_PUSH_GROUP( "CGUIScreenHud" );
     rAssert( pGroup != NULL );
     m_overlays[ HUD_TIMER ] = pGroup;
     m_overlays[ HUD_TIMER_TEMP ] = pGroup;
+#ifdef RAD_ANDROID
+    ScroobySetVrMissionHudGroup( 2, pGroup );
+#endif
     m_timer = pGroup->GetSprite( "Timer" );
     rAssert( m_timer != NULL );
     m_timer->SetSpriteMode( Scrooby::SPRITE_BITMAP_TEXT );
@@ -347,11 +357,25 @@ MEMTRACK_PUSH_GROUP( "CGUIScreenHud" );
     pGroup = pPage->GetGroup( "HudMap0" );
     rAssert( pGroup != NULL );
     m_overlays[ HUD_MAP ] = pGroup;
+#ifdef RAD_ANDROID
+    // Register the actual runtime object. Release Scrooby packages do not
+    // preserve a dependable group-name UID, so renderer-side name matching
+    // can silently miss HudMap0 altogether.
+    ScroobySetVrRadarGroup(m_overlays[HUD_MAP]);
+#endif
 
     // scale entire HUD map (or RADAR, if you'd prefer to call it that)
     //
     m_overlays[ HUD_MAP ]->ResetTransformation();
-    m_overlays[ HUD_MAP ]->ScaleAboutCenter( RADAR_SCALE );
+#ifdef RAD_ANDROID
+    // FePure3dObject resets the matrix stack and therefore does not inherit
+    // this parent scale, while the Radar0 sprites do. Applying RADAR_SCALE in
+    // VR makes only the frame 10% smaller and moves it around the group centre.
+    if( !SharOpenXR::IsSpatialHudEnabled() )
+#endif
+    {
+        m_overlays[ HUD_MAP ]->ScaleAboutCenter( RADAR_SCALE );
+    }
 
     #ifdef RAD_ANDROID
     ApplyAndroidHudMapLayout();
@@ -379,13 +403,17 @@ MEMTRACK_PUSH_GROUP( "CGUIScreenHud" );
     pGroup = pPage->GetGroup( "Message" );
     rAssert( pGroup != NULL );
     m_overlays[ HUD_MESSAGE ] = pGroup;
+#ifdef RAD_ANDROID
+    ScroobySetVrMissionHudGroup( 1, pGroup );
+#endif
     m_helpMessage = pGroup->GetText( "Message" );
     rAssert( m_helpMessage != NULL );
     m_helpMessage->SetTextMode( Scrooby::TEXT_WRAP );
     m_helpMessage->ResetTransformation();
     m_helpMessage->Translate( 0, MESSAGE_TEXT_VERTICAL_TRANSLATION );
-    m_helpMessage->ScaleAboutPoint( MESSAGE_TEXT_SCALE * MESSGAE_TEXT_HORIZONTAL_STRETCH,
-                                    MESSAGE_TEXT_SCALE,
+    const float vrMessageScale=SharOpenXR::IsVrModeEnabled()?1.35f:1.0f;
+    m_helpMessage->ScaleAboutPoint( MESSAGE_TEXT_SCALE * MESSGAE_TEXT_HORIZONTAL_STRETCH * vrMessageScale,
+                                    MESSAGE_TEXT_SCALE * vrMessageScale,
                                     1.0f, 0, 0 );
 
     m_messageBox = pGroup->GetSprite( "MessageBox" );
@@ -396,8 +424,13 @@ MEMTRACK_PUSH_GROUP( "CGUIScreenHud" );
                                     1.0f );
 
     m_actionButton = pPage->GetGroup( "ActionButton" );
-    rAssert( pGroup != NULL );
+    rAssert( m_actionButton != NULL );
     m_overlays[ HUD_ACTION_BUTTON ] = m_actionButton;
+#ifdef RAD_ANDROID
+    // Slots 3 and 4 belong to the coin counter and its 3D coin. Keep the
+    // contextual action prompt on its own target.
+    ScroobySetVrMissionHudGroup( 5, m_actionButton );
+#endif
 
     // hide all HUD overlays by default
     //
@@ -430,6 +463,9 @@ MEMTRACK_PUSH_GROUP( "CGUIScreenHud" );
     m_hudEventHandlers[ HUD_EVENT_HANDLER_HIT_N_RUN ] = new HudHitNRun( pPage );
     m_hudEventHandlers[ HUD_EVENT_HANDLER_WASP_DESTROYED ] = new HudWaspDestroyed( pPage );
     m_hudEventHandlers[ HUD_EVENT_HANDLER_ITEM_DROPPED ] = new HudItemDropped( pPage );
+
+#ifdef RAD_ANDROID
+#endif
 
     // register event listeners
     //
@@ -1500,7 +1536,14 @@ CGuiScreenHud::UpdateNumCoinsDisplay( int numCoins, bool show )
 
     static int coinPosX = CGuiScreen::IsWideScreenDisplay() ? 540 : 605;
     static int coinPosY = 432;
+#ifdef RAD_ANDROID
+    // The persistent coin is composed beside the captured counter in the
+    // spatial HUD. Do not leave CoinManager's orthographic copy on the eyes.
+    GetCoinManager()->SetHUDCoin( coinPosX, coinPosY,
+        show && !SharOpenXR::IsSpatialHudEnabled() );
+#else
     GetCoinManager()->SetHUDCoin( coinPosX, coinPosY, show );
+#endif
 
     if( show )
     {
@@ -1709,6 +1752,10 @@ CGuiScreenHud::UpdateOverlays( unsigned int elapsedTime )
     //
     if( m_overlays[ HUD_MESSAGE ]->IsVisible() )
     {
+#ifdef RAD_ANDROID
+        if( SharOpenXR::IsSpatialHudEnabled() )
+            m_elapsedTime[ HUD_MESSAGE ] = MESSAGE_TRANSITION_TIME;
+#endif
         m_elapsedTime[ HUD_MESSAGE ] += elapsedTime;
 
         if( m_elapsedTime[ HUD_MESSAGE ] > MESSAGE_DISPLAY_TIME )
@@ -2129,11 +2176,18 @@ void CGuiScreenHud::ApplyAndroidHudMapLayout()
 {
     rAssert( m_overlays[ HUD_MAP ] != NULL );
 
+    const bool useVrHudMapLayout = SharOpenXR::IsSpatialHudEnabled();
+    // Motion controllers can make Android report touch input while VR is
+    // active. The touch layout translates Map0 by (100,290) independently of
+    // Radar0, separating the 3D map from its frame. A spatial radar has its
+    // own placement, so keep the complete authored HUD group registered.
     const bool useTouchHudMapLayout =
+            !useVrHudMapLayout &&
             TouchInputModeManager::GetInstance().IsTouchMode();
 
     if( m_androidHudMapLayoutInitialized &&
-        m_androidHudMapTouchLayoutActive == useTouchHudMapLayout )
+        m_androidHudMapTouchLayoutActive == useTouchHudMapLayout &&
+        m_androidHudMapVrLayoutActive == useVrHudMapLayout )
     {
         return;
     }
@@ -2143,72 +2197,34 @@ void CGuiScreenHud::ApplyAndroidHudMapLayout()
 
     m_androidHudMapLayoutInitialized = true;
     m_androidHudMapTouchLayoutActive = useTouchHudMapLayout;
+    m_androidHudMapVrLayoutActive = useVrHudMapLayout;
 
     const int offsetX = ANDROID_TOUCH_HUD_MAP_OFFSET_X;
     const int offsetY = ANDROID_TOUCH_HUD_MAP_OFFSET_Y;
 
-    if( !wasInitialized )
+    // MoveHudMap changes Map0/Hole0 directly, unlike the parent group
+    // transform. Undo the previous touch layout before rebuilding the group.
+    if( wasInitialized && wasTouchLayout )
     {
-        m_overlays[ HUD_MAP ]->ResetTransformation();
-        m_overlays[ HUD_MAP ]->ScaleAboutCenter( RADAR_SCALE );
-
-        if( useTouchHudMapLayout )
-        {
-            // Move the 2D HUD map group.
-            m_overlays[ HUD_MAP ]->Translate( offsetX, offsetY );
-
-            if( m_hudMap[ 0 ] != NULL )
-            {
-                // Tell CHudMap that the parent 2D group is translated.
-                // Icons need to compensate for this parent transform.
-                m_hudMap[ 0 ]->SetAndroidHudMapOverlayOffset( offsetX, offsetY );
-            }
-
-            // Move Map0/Hole0 and update CHudMap original position.
-            this->MoveHudMap( offsetX, offsetY );
-        }
-        else
-        {
-            if( m_hudMap[ 0 ] != NULL )
-            {
-                m_hudMap[ 0 ]->SetAndroidHudMapOverlayOffset( 0, 0 );
-            }
-        }
-
-        return;
+        this->MoveHudMap( -offsetX, -offsetY );
     }
 
-    // Runtime transition: gamepad -> touch.
-    //
-    if( !wasTouchLayout && useTouchHudMapLayout )
+    m_overlays[ HUD_MAP ]->ResetTransformation();
+    if( !useVrHudMapLayout )
+    {
+        m_overlays[ HUD_MAP ]->ScaleAboutCenter( RADAR_SCALE );
+    }
+
+    if( useTouchHudMapLayout )
     {
         m_overlays[ HUD_MAP ]->Translate( offsetX, offsetY );
-
-        if( m_hudMap[ 0 ] != NULL )
-        {
-            m_hudMap[ 0 ]->SetAndroidHudMapOverlayOffset( offsetX, offsetY );
-        }
-
         this->MoveHudMap( offsetX, offsetY );
-
-        return;
     }
 
-    // Runtime transition: touch -> gamepad.
-    //
-    if( wasTouchLayout && !useTouchHudMapLayout )
-    {
-        m_overlays[ HUD_MAP ]->Translate( -offsetX, -offsetY );
-
-        if( m_hudMap[ 0 ] != NULL )
-        {
-            m_hudMap[ 0 ]->SetAndroidHudMapOverlayOffset( 0, 0 );
-        }
-
-        this->MoveHudMap( -offsetX, -offsetY );
-
-        return;
-    }
+    if( m_hudMap[ 0 ] != NULL )
+        m_hudMap[ 0 ]->SetAndroidHudMapOverlayOffset(
+            useTouchHudMapLayout ? offsetX : 0,
+            useTouchHudMapLayout ? offsetY : 0 );
 }
 #endif // RAD_ANDROID 
 

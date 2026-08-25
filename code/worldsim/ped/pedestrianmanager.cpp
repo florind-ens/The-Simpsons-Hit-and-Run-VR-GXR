@@ -17,6 +17,9 @@
 #include <debug/profiler.h> // for the Profiler
 #include <radmath/radmath.hpp> // for rmt::Vector 
 #include <memory/srrmemory.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 
 #include <meta/locatorevents.h>
 #include <meta/pedgrouplocator.h>
@@ -263,6 +266,14 @@ BEGIN_PROFILE( "Pedestrian Manager" );
 
     rmt::Vector camTarget;
     pCam->GetHeadingNormalized( &camTarget );
+#if defined(RAD_ANDROID)
+    rmt::Matrix vrCullCamera;
+    if(SharOpenXR::GetLatestCullingCamera(&vrCullCamera))
+    {
+        camTarget=vrCullCamera.Row(2);
+        camTarget.Normalize();
+    }
+#endif
     rAssert( rmt::Epsilon(camTarget.MagnitudeSqr(), 1.0f, 0.0005f) );
 
     rmt::Vector center;

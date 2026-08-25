@@ -81,6 +81,7 @@ SkidmarkManager* SkidmarkManager::GetInstance()
 void SkidmarkManager::DestroyInstance()
 {
     delete spInstance;
+    spInstance = NULL;
 }
 
 void SkidmarkManager::Update( unsigned int timeInMS )

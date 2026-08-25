@@ -153,6 +153,7 @@ set(SRR2_SOURCES
 	"main/singletons.cpp"
 	"main/tuidunaligned.cpp"
 	"main/win32main.cpp"
+	"vr/openxrmanager.cpp"
 	"main/win32platform.cpp"
 	"memory/classsizetracker.cpp"
 	"memory/createheap.cpp"
@@ -256,7 +257,7 @@ set(SRR2_SOURCES
 	"presentation/gui/frontend/guiscreencardgallery.cpp"
 	"presentation/gui/frontend/guiscreencontroller.cpp"
 	#"presentation/gui/frontend/guiscreencontrollerWin32.cpp"
-	#"presentation/gui/frontend/guiscreendisplay.cpp"
+	"presentation/gui/frontend/guiscreendisplay.cpp"
 	"presentation/gui/frontend/guiscreenloadgame.cpp"
 	"presentation/gui/frontend/guiscreenmainmenu.cpp"
 	"presentation/gui/frontend/guiscreenmissiongallery.cpp"
@@ -303,9 +304,10 @@ set(SRR2_SOURCES
 	"presentation/gui/ingame/guiscreenmultihud.cpp"
 	"presentation/gui/ingame/guiscreenpausecontroller.cpp"
 	"presentation/gui/ingame/guiscreenpause.cpp"
-	#"presentation/gui/ingame/guiscreenpausedisplay.cpp"
+	"presentation/gui/ingame/guiscreenpausedisplay.cpp"
 	"presentation/gui/ingame/guiscreenpausemission.cpp"
 	"presentation/gui/ingame/guiscreenpauseoptions.cpp"
+	"presentation/gui/ingame/guiscreenpausevr.cpp"
 	"presentation/gui/ingame/guiscreenpausesettings.cpp"
 	"presentation/gui/ingame/guiscreenpausesound.cpp"
 	"presentation/gui/ingame/guiscreenpausesunday.cpp"
@@ -584,6 +586,7 @@ if(ANDROID)
 		android
 		EGL
 		GLESv2
+		dl
 	)
 endif()
 

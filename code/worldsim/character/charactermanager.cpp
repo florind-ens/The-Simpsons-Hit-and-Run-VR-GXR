@@ -171,6 +171,7 @@ void CharacterManager::DestroyInstance( void )
 {
 	rAssertMsg( spCharacterManager != 0, "CharacterManager has not been created.\n" );
 	delete ( GMA_PERSISTENT, spCharacterManager );
+    spCharacterManager = 0;
 }
 
 /*

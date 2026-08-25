@@ -30,6 +30,9 @@
 //========================================
 #include <camera/supercam.h>
 #include <camera/supercamcentral.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 #include <camera/animatedcam.h>
 #include <camera/conversationcam.h>
 #include <camera/frustrumdrawable.h>
@@ -244,6 +247,9 @@ SuperCamCentral::SuperCamCentral() :
     mIsInvertedCameraEnabled( false ),
     mJumpCamsEnabled( true ),
     mCameraToggling( false ),
+#if defined(RAD_ANDROID)
+    mVrForcedCamera( false ),
+#endif
     mNastyHypeCamHackEnabled( false )
 {
 MEMTRACK_PUSH_GROUP( "SuperCamCentral" );
@@ -359,6 +365,13 @@ SuperCamCentral::~SuperCamCentral()
     radDbgWatchDelete( & mChanceToBurnout );
     radDbgWatchDelete( & mCameraCollisionFudge );
 #endif
+
+    // SuperCamManager can be destroyed and recreated in the same Android
+    // process. Keep player numbering valid for the reconstructed centrals.
+    if( mTotalSuperCamCentrals > 0 )
+    {
+        --mTotalSuperCamCentrals;
+    }
 }
 
 // Ajustes de la versión para android en el .txt
@@ -643,6 +656,54 @@ void SuperCamCentral::UpdateCameraCollisionSphereRadius(float radius)
 //=============================================================================
 void SuperCamCentral::Update( unsigned int milliseconds, bool isFirstSubstep )
 {
+#if defined(RAD_ANDROID)
+    // VR mode owns the normal on-foot camera, but leaves mission, animated,
+    // conversation and other authored cameras alone.
+    if(mTarget && mActiveSuperCam)
+    {
+        const SuperCam::Type activeType=mActiveSuperCam->GetType();
+        if(SharOpenXR::IsVrModeEnabled())
+        {
+            Character* vrCharacter=GetCharacterManager()->GetCharacter(0);
+            const bool vrSeated=vrCharacter && vrCharacter->IsInCar();
+            if(!mTarget->IsCar() &&
+               (activeType==SuperCam::WALKER_CAM
+#ifdef RAD_PC
+                || activeType==SuperCam::PC_CAM
+#endif
+               ))
+            {
+                SelectSuperCam(SuperCam::FIRST_PERSON_CAM,CUT|FORCE,0);
+                mVrForcedCamera=true;
+            }
+            else if(mTarget->IsCar() && vrSeated &&
+                    activeType==SuperCam::FIRST_PERSON_CAM)
+            {
+                // Entering a vehicle can retain the already active VR camera;
+                // SetTarget has supplied the vehicle heading and the camera
+                // itself anchors its position to the seated character's head.
+                mVrForcedCamera=true;
+            }
+            else if(mTarget->IsCar() && vrSeated &&
+                    (activeType==SuperCam::NEAR_FOLLOW_CAM ||
+                     activeType==SuperCam::FAR_FOLLOW_CAM ||
+                     activeType==SuperCam::REVERSE_CAM ||
+                     activeType==SuperCam::WALKER_CAM ||
+                     activeType==SuperCam::BUMPER_CAM))
+            {
+                SelectSuperCam(SuperCam::FIRST_PERSON_CAM,CUT|FORCE,0);
+                mVrForcedCamera=true;
+            }
+        }
+        else if(mVrForcedCamera &&
+                activeType==SuperCam::FIRST_PERSON_CAM)
+        {
+            SelectSuperCam(mTarget->IsCar()?SuperCam::FOLLOW_CAM:SuperCam::WALKER_CAM,
+                           CUT|FORCE,0);
+            mVrForcedCamera=false;
+        }
+    }
+#endif
 
     #if defined(RAD_XBOX) || defined(RAD_WIN32)
 
@@ -2265,6 +2326,10 @@ bool SuperCamCentral::IsLegalType( SuperCam::Type type )
          type == SuperCam::RAIL_CAM ||
          type == SuperCam::CONVERSATION_CAM ||
          (mTarget != NULL && !mTarget->IsCar() && type == SuperCam::FIRST_PERSON_CAM ) ||
+#if defined(RAD_ANDROID)
+         (mTarget != NULL && mTarget->IsCar() && type == SuperCam::FIRST_PERSON_CAM &&
+          SharOpenXR::IsVrModeEnabled()) ||
+#endif
          (mTarget != NULL && mTarget->IsCar() && type == SuperCam::REVERSE_CAM) ||
          type == SuperCam::ANIMATED_CAM ||
          type == SuperCam::RELATIVE_ANIMATED_CAM ||

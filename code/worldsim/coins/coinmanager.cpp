@@ -39,6 +39,9 @@
 #include <data/PersistentWorldManager.h>
 #include <mission/gameplaymanager.h>
 #include <mission/charactersheet/charactersheetmanager.h>
+#ifdef RAD_ANDROID
+#include <vr/openxrmanager.h>
+#endif
 
 /* Watcher stuff */
 #ifndef RAD_RELEASE
@@ -1000,6 +1003,27 @@ void CoinManager::Render( void )
     {
         GlintDelay = Glint_Rate;
         DoGlint = Sparkle::sRandom.IntRanged( 0, NUM_COINS );
+    }
+}
+
+void CoinManager::RenderCsmCasters( void )
+{
+    if(!m_pCoinDrawable) return;
+
+    for(int i=0;i<NUM_COINS;++i)
+    {
+        ActiveCoin& c=mActiveCoins[i];
+        if(c.State==CS_Inactive || c.State==CS_Collected ||
+           c.State==CS_FlyingToHUD || c.State==CS_FlyingFromHUD)
+            continue;
+
+        rmt::Matrix transform(c.HeadingCos,0.0f,-c.HeadingSin,0.0f,
+                              0.0f,1.0f,0.0f,0.0f,
+                              c.HeadingSin,0.0f,c.HeadingCos,0.0f,
+                              c.Position.x,c.Position.y,c.Position.z,1.0f);
+        p3d::pddi->PushMultMatrix(PDDI_MATRIX_MODELVIEW,&transform);
+        m_pCoinDrawable->Display();
+        p3d::pddi->PopMatrix(PDDI_MATRIX_MODELVIEW);
     }
 }
 

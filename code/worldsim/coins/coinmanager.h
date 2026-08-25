@@ -53,6 +53,7 @@ public:
 
     void Update( int ElapsedMS ); // Elapsed milliseconds.
     void Render( void ); // Draw coins. Do simple frustum and distance check on them.
+    void RenderCsmCasters( void ); // Draw world coins into the sun depth map.
     void HUDRender( void ); // Draw any HUD animations.
 
     int GetBankValue( void ) const; // How much is in the bank.
@@ -68,6 +69,11 @@ public:
     void AddWorldCoin( const rmt::Vector& Position, tUID Sector ); // Place a coin to sit happily in a zone until the zone unloads.
 
     void SetHUDCoin( int X, int Y, bool IsShowing = true );
+    bool IsHUDCoinVisible() const
+    {
+        return mHUDCoinX > -1.0f && mHUDCoinX < 1.0f &&
+               mHUDCoinY > -1.0f && mHUDCoinY < 1.0f;
+    }
     void AddFlyDownCoin(void); // Create an animation of a single coin zipping down from the HUD counter.
 	void ClearHUDCoins(void); // Remove all HUD coins.
 

@@ -74,6 +74,12 @@ private:
     ISuperCamTarget* mTarget;
     bool mTargetDirty : 1;
     rmt::Vector mTargetPositionOffset;
+    rmt::Vector mVrBaseHeading;
+    float mVrStickYaw;
+    bool mVrSnapReady : 1;
+    rmt::Matrix mVrVehicleAnchorLocal;
+    bool mVrVehicleAnchorValid : 1;
+    bool mVrVehicleCameraLogged : 1;
 
     float mRotation;
     float mElevation;

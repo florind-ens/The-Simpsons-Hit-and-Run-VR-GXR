@@ -42,6 +42,10 @@ public:
 
     // gl specific stuff
     void SetGLState(void);
+#if defined(RAD_ANDROID)
+    void SetSourceName(const char* name);
+    const char* GetSourceName() const { return sourceName; }
+#endif
 
 protected:
     pglContext* context;
@@ -59,6 +63,13 @@ protected:
     pddiLockInfo lock;
 
     char** bits;
+#if defined(RAD_ANDROID)
+    char sourceName[96];
+#endif
 };
+
+#if defined(RAD_ANDROID)
+void pglSetTextureSourceName(pddiTexture* texture,const char* name);
+#endif
 #endif
 

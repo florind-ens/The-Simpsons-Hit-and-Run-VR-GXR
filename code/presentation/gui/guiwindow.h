@@ -80,7 +80,7 @@ class CGuiWindow : public CGuiEntity
             GUI_SCREEN_ID_SOUND,
             GUI_SCREEN_ID_VIEW_MOVIES,
             GUI_SCREEN_ID_VIEW_CREDITS,
-#ifdef RAD_PC
+#if defined(RAD_PC) || defined(RAD_ANDROID)
             GUI_SCREEN_ID_DISPLAY,
 #endif
             GUI_SCREEN_ID_PLAY_MOVIE,
@@ -96,6 +96,7 @@ class CGuiWindow : public CGuiEntity
 			GUI_SCREEN_ID_PAUSE_MISSION,
             GUI_SCREEN_ID_MISSION_SELECT,
             GUI_SCREEN_ID_SETTINGS,
+            GUI_SCREEN_ID_VR,
             GUI_SCREEN_ID_LEVEL_STATS,
             GUI_SCREEN_ID_VIEW_CARDS,
             GUI_SCREEN_ID_SAVE_GAME,

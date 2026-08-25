@@ -82,6 +82,7 @@ class FeText
         void SetTextStyle( const char* textStyleName );
         void SetTextStyle( unsigned int resourceID );
         tFont* GetTextStyle() const;
+        unsigned int GetTextStyleResourceId() const { return mTextStyle; }
 
         void AddHardCodedString( const char* string );
         void AddTextBibleString( unsigned int textBibleResourceID, const char* stringID );

@@ -16,6 +16,10 @@
 #include <p3d/camera.hpp>
 #include <p3d/matrixstack.hpp>
 #include <p3d/billboardobject.hpp>
+
+#if defined(RAD_ANDROID)
+extern int gPglCsmBillboardMode;
+#endif
 #include <pddi/pddiext.hpp>
 
 #ifdef RAD_XBOX
@@ -123,6 +127,10 @@ tBillboardQuad::~tBillboardQuad()
 void 
 tBillboardQuad::Display(pddiPrimStream* stream, const Matrix& world, const Matrix& camera, const Matrix& worldToCamera, float intensityBias)
 {
+#if defined(RAD_ANDROID)
+    if(gPglCsmBillboardMode==1 &&
+       billboardMode!=p3dBillboardConstants::BillboardMode::NO_AXIS) return;
+#endif
     if (!visible)
     {
         return;
@@ -431,6 +439,10 @@ tBillboardQuad::Display(pddiPrimStream* stream, const Matrix& world, const Matri
 
 void BakedBillboardQuad::Display(pddiPrimStream* stream)
 {
+#if defined(RAD_ANDROID)
+    if(gPglCsmBillboardMode==1 &&
+       billboardMode!=p3dBillboardConstants::BillboardMode::NO_AXIS) return;
+#endif
     //displayColour.SetAlpha(255);
     //displayColour.SetRed(255);
     //displayColour.SetGreen(255);
@@ -1242,6 +1254,9 @@ tBillboardQuadGroup::FindQuadByName(const char* name)
 void 
 tBillboardQuadGroup::Display()
 {
+#if defined(RAD_ANDROID)
+    if(gPglCsmBillboardMode==2) return;
+#endif
     if ( !BillboardQuadManager::sEnabled )
     {
         Matrix world = *(p3d::context->GetWorldMatrix());
@@ -2171,6 +2186,10 @@ inline void LoadMatrix(const Matrix& m)
 
 void tBillboardQuad::Display(pddiPrimStream* stream, const Matrix& world, const Matrix& camera, const Matrix& worldToCamera, float intensityBias)
 {
+#if defined(RAD_ANDROID)
+    if(gPglCsmBillboardMode==1 &&
+       billboardMode!=p3dBillboardConstants::BillboardMode::NO_AXIS) return;
+#endif
     if (!visible)
     {
         return;
@@ -2493,6 +2512,10 @@ void tBillboardQuad::Display(pddiPrimStream* stream, const Matrix& world, const 
 
 void BakedBillboardQuad::Display(pddiPrimStream* stream)
 {
+#if defined(RAD_ANDROID)
+    if(gPglCsmBillboardMode==1 &&
+       billboardMode!=p3dBillboardConstants::BillboardMode::NO_AXIS) return;
+#endif
     if ((!flip)||(billboardMode != p3dBillboardConstants::BillboardMode::NO_AXIS))
     {
         //bottom left
@@ -2903,6 +2926,9 @@ tBillboardQuad* tBillboardQuadGroup::FindQuadByName(const char* name)
 
 void tBillboardQuadGroup::Display()
 {
+#if defined(RAD_ANDROID)
+    if(gPglCsmBillboardMode==2) return;
+#endif
     if( noAxisFastPath )
     {
         DisplayNoAxisFastpath();

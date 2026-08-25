@@ -64,6 +64,10 @@ void tPlatform::Destroy(tPlatform* plat)
     P3DASSERT(plat == currentPlatform);
     delete currentPlatform;
     currentPlatform = NULL;
+    // SDLActivity can run SDL_main again without unloading libmain.so.
+    // Never leave the public Pure3D platform pointer referencing the object
+    // just destroyed by the previous Activity instance.
+    p3d::platform = NULL;
 }
 
 tContext* tPlatform::CreateContext(tContextInitData* d)
@@ -157,6 +161,17 @@ void tPlatform::DestroyContext(tContext* context)
     if(currentContext == context)
     {
         currentContext = NULL;
+        // RenderFlow is constructed before InitializePure3D on the next
+        // SDL_main invocation. Its initial cameras deliberately tolerate a
+        // null display, but a dangling display/context from the previous run
+        // turns that startup probe into a use-after-free.
+        p3d::context = NULL;
+        p3d::inventory = NULL;
+        p3d::stack = NULL;
+        p3d::loadManager = NULL;
+        p3d::pddi = NULL;
+        p3d::device = NULL;
+        p3d::display = NULL;
     }
 }
     

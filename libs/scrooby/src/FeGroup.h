@@ -32,7 +32,7 @@ public:
 
     virtual void RotateAboutCenter( float angle, rmt::Vector axis = rmt::Vector( 0, 0, 1 ) );
 
-    void Display() { FeOwner::Display(); }
+    void Display();
   
     void Show();    // called on screen update
 protected:

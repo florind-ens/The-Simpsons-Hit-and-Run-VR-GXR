@@ -22,6 +22,7 @@
 
 #include "../../../code/render/Culling/SwapArray.h"
 
+
 //*****************************************************************************
 //
 // Class tBillboardQuad

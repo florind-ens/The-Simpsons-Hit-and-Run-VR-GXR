@@ -24,6 +24,9 @@
 #include <worldsim/character/charactercontroller.h>
 #include <worldsim/character/charactermanager.h>
 #include <worldsim/avatarmanager.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 #include <worldsim/hitnrunmanager.h>
 
 #include <ai/sequencer/action.h>
@@ -40,6 +43,7 @@
 #include <worldsim/redbrick/geometryvehicle.h>
 #include <worldsim/worldphysicsmanager.h>
 #include <simcollision/collisionmanager.hpp>
+#include <render/IntersectManager/IntersectManager.h>
 
 #include <worldsim/avatarmanager.h>
 
@@ -889,7 +893,13 @@ void GetIn::Enter( void )
         mFirst = false;
     }
     
-    if(!mpCharacter->GetTargetVehicle()->mIrisTransition && !mObstructed && (mpCharacter->GetTargetVehicle()->GetSpeedKmh() <= 1.0f)) 
+    bool vrInstantEntry=false;
+#if defined(RAD_ANDROID)
+    vrInstantEntry=SharOpenXR::IsVrModeEnabled() &&
+                   mpCharacter==GetCharacterManager()->GetCharacter(0);
+#endif
+    if(!vrInstantEntry && !mpCharacter->GetTargetVehicle()->mIrisTransition &&
+       !mObstructed && (mpCharacter->GetTargetVehicle()->GetSpeedKmh() <= 1.0f))
     {
         if(mpCharacter->GetWalkerLocomotionAction()->GetStatus() != RUNNING)
         {
@@ -1348,6 +1358,13 @@ void GetOut::Enter( void )
 {
     bool destroyed = !mpCharacter->GetTargetVehicle() || mpCharacter->GetTargetVehicle()->mVehicleDestroyed;
     bool iris = !destroyed && (mObstructed || mpCharacter->GetTargetVehicle()->mIrisTransition);
+#if defined(RAD_ANDROID)
+    if(!destroyed && SharOpenXR::IsVrModeEnabled() &&
+       mpCharacter==GetCharacterManager()->GetCharacter(0))
+    {
+        iris=true;
+    }
+#endif
 
     if(mFirst)
     {
@@ -1469,16 +1486,94 @@ void GetOut::HandleEvent( EventEnum id, void* pUserData )
             sim::RayIntersectionInfo::sRayThickness = fOldRayThickness;
         }
 
-        if(mObstructed)
-        {
-            car->GetPosition(&getOutPosition);
-            getOutPosition.y += car->GetExtents().y + 0.2f;
-        }
-
         rmt::Vector facing = car->GetTransform().Row(0);
         if(isDriver)
         {
             facing.Scale(-1.0f);
+        }
+
+        if(mObstructed)
+        {
+            // The old VR fallback placed the character above the centre of
+            // the car. SnapToGround could resolve through a nearby wall and
+            // leave the player embedded in static geometry. Search around the
+            // vehicle footprint for a reachable, walkable exit instead.
+            rmt::Vector carPosition;
+            car->GetPosition(&carPosition);
+            const rmt::Vector extents=car->GetExtents();
+            const float side=extents.x+0.85f;
+            const float end=extents.z+0.85f;
+            const float driverSide=isDriver?-side:side;
+            const rmt::Vector localCandidates[8]={
+                rmt::Vector(driverSide,0.0f,0.0f),
+                rmt::Vector(-driverSide,0.0f,0.0f),
+                rmt::Vector(0.0f,0.0f,-end),
+                rmt::Vector(0.0f,0.0f,end),
+                rmt::Vector(driverSide,0.0f,-end),
+                rmt::Vector(-driverSide,0.0f,-end),
+                rmt::Vector(driverSide,0.0f,end),
+                rmt::Vector(-driverSide,0.0f,end)
+            };
+
+            bool foundSafeExit=false;
+            const float oldThickness=sim::RayIntersectionInfo::sRayThickness;
+            sim::RayIntersectionInfo::sRayThickness=0.45f;
+            for(int candidateIndex=0;candidateIndex<8 && !foundSafeExit;
+                ++candidateIndex)
+            {
+                rmt::Vector candidate=localCandidates[candidateIndex];
+                candidate.Transform(car->GetTransform());
+
+                rmt::Vector groundQuery=candidate;
+                groundQuery.y=carPosition.y+extents.y+2.0f;
+                bool foundGround=false;
+                rmt::Vector groundNormal,groundPosition;
+                GetIntersectManager()->FindIntersection(groundQuery,foundGround,
+                                                        groundNormal,groundPosition);
+                if(!foundGround || groundNormal.y<0.55f) continue;
+                candidate.y=groundPosition.y+0.1f;
+
+                sIntersectInfo.Clear();
+                sim::RayIntersectionInfo::SetReturnClosestOnly(false);
+                sim::RayIntersectionInfo::SetMethod(sim::RayIntersectionVolume);
+                rmt::Vector rayStart=carPosition;
+                rayStart.y=candidate.y+0.8f;
+                rmt::Vector rayEnd=candidate;
+                rayEnd.y+=0.8f;
+                GetWorldPhysicsManager()->mCollisionManager->DetectRayIntersection(
+                    sIntersectInfo,rayStart,rayEnd,false,car->mCollisionAreaIndex);
+
+                bool blocked=false;
+                for(int hit=0;hit<sIntersectInfo.GetSize();++hit)
+                {
+                    if(!sIntersectInfo[hit].mCollisionVolume) continue;
+                    sim::SimState* hitState=sIntersectInfo[hit].mCollisionVolume->
+                        GetCollisionObject()->GetSimState();
+                    void* hitObject=hitState?hitState->mAIRefPointer:NULL;
+                    if(hitObject!=mpCharacter && hitObject!=car)
+                    {
+                        blocked=true;
+                        break;
+                    }
+                }
+                if(!blocked)
+                {
+                    getOutPosition=candidate;
+                    facing=candidate-carPosition;
+                    facing.y=0.0f;
+                    if(facing.NormalizeSafe()<0.001f)
+                        facing=car->GetTransform().Row(0);
+                    foundSafeExit=true;
+                    mObstructed=false;
+                }
+            }
+            sim::RayIntersectionInfo::sRayThickness=oldThickness;
+
+            if(!foundSafeExit)
+            {
+                getOutPosition=carPosition;
+                getOutPosition.y+=extents.y+0.5f;
+            }
         }
 
         GetAvatarManager()->PutCharacterOnGround( character, car );

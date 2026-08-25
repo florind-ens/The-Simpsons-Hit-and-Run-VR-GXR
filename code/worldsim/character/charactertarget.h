@@ -49,6 +49,8 @@ public:
     virtual bool IsQuickTurn();
     virtual bool IsInReverse();
     virtual void GetFirstPersonPosition( rmt::Vector* position );
+    void GetHeadWorldPosition( rmt::Vector* position ) const;
+    void GetHeadWorldTransform( rmt::Matrix* transform ) const;
     virtual void GetTerrainIntersect( rmt::Vector& pos, rmt::Vector& normal ) const;
 
 

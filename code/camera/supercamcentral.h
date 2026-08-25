@@ -246,6 +246,9 @@ private:
     bool mIsInvertedCameraEnabled : 1;
     bool mJumpCamsEnabled : 1;
     bool mCameraToggling : 1;
+#if defined(RAD_ANDROID)
+    bool mVrForcedCamera : 1;
+#endif
     bool mNastyHypeCamHackEnabled : 1;
 
     static FollowCamDataChunk mFollowCamDataChunks[ MAX_DATA_CHUNKS ];

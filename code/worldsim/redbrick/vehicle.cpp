@@ -98,6 +98,9 @@
 #include <supersprint/supersprintmanager.h>
 #include <p3d/billboardobject.hpp>
 #include <meta/triggervolumetracker.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 
 #include <camera/supercammanager.h>
 #include <camera/supercamcentral.h>
@@ -184,6 +187,20 @@ void Vehicle::SetUserDrivingCar( bool b )
     {
         mVehicleType = VT_USER;
     }
+#if defined(RAD_ANDROID)
+    // A hood that is already flapping can obstruct most of the VR driving
+    // view as soon as the player enters the car. Keep normal closed hoods.
+    if( b && SharOpenXR::IsVrModeEnabled() && mHoodJoint != -1 )
+    {
+        const int index=mJointIndexToInertialJointDriverMapping
+                       ?mJointIndexToInertialJointDriverMapping[mHoodJoint]:-1;
+        if(index != -1 && mInertialJointDrivers[index] &&
+           mInertialJointDrivers[index]->IsEnabled())
+        {
+            mGeometryVehicle->HideFlappingPiece(mHoodJoint,true);
+        }
+    }
+#endif
 }   
 
 
@@ -4167,6 +4184,20 @@ const rmt::Vector& Vehicle::GetDriverLocation( void ) const
 {
     return mDriverLocation;
 }
+
+void Vehicle::DisplayCsmReceiver()
+{
+    if(IS_DRAW_LONG || !mOkToDrawSelf || !mDrawVehicle || !mGeometryVehicle)
+        return;
+    mGeometryVehicle->DisplayCsmReceiver();
+}
+
+void Vehicle::GetDriverWorldPosition( rmt::Vector* position, float localEyeHeight ) const
+{
+    *position = mDriverLocation;
+    position->y += localEyeHeight;
+    position->Transform( mTransform );
+}
 //=============================================================================
 // Vehicle::PreReactToCollision
 //=============================================================================
@@ -4239,6 +4270,7 @@ void Vehicle::ResetDamageState()
     mVehicleDestroyed = false;
     mDontShowBrakeLights = false;   
     mGeometryVehicle->SetLightsOffDueToDamage(false);
+    mGeometryVehicle->ResetCollisionDeformation();
     mDamageOutResetTimer = 0.0f;
     mHitPoints = mDesignerParams.mHitPoints;
 
@@ -4577,6 +4609,15 @@ sim::Solving_Answer Vehicle::PostReactToCollision(rmt::Vector& impulse, sim::Col
     }
 
     float normalizedMagnitude = impulseMagnitude / maxIntensity;
+
+    // Keep visual body damage tied to the actual contact on this vehicle.
+    // The collision hull is intentionally left unchanged for stable handling.
+    if(normalizedMagnitude>=0.075f && mGeometryVehicle)
+    {
+        const bool thisIsCollisionA=(simStateA->mAIRefPointer==this);
+        const rmt::Vector& ownContact=thisIsCollisionA ? inCollision.GetPositionA() : inCollision.GetPositionB();
+        mGeometryVehicle->AddCollisionDent(ownContact,normalizedMagnitude);
+    }
     
         
     if(simStateA->mAIRefIndex == PhysicsAIRef::redBrickVehicle && simStateB->mAIRefIndex == PhysicsAIRef::redBrickVehicle)
@@ -5517,6 +5558,11 @@ void Vehicle::VisualDamageType1(float percentageDamage, DamageLocation dl)
             {
                 mPhObj->GetJoint(joint)->SetInvStiffness(1.0f);
                 mInertialJointDrivers[index]->SetIsEnabled(true);
+#if defined(RAD_ANDROID)
+                if(dl==dl_hood && mUserDrivingCar &&
+                   SharOpenXR::IsVrModeEnabled())
+                    mGeometryVehicle->HideFlappingPiece(joint,true);
+#endif
             }         
         }
     }
@@ -5560,6 +5606,10 @@ void Vehicle::VisualDamageType1(float percentageDamage, DamageLocation dl)
             {
                 mPhObj->GetJoint(mHoodJoint)->SetInvStiffness(1.0f);
                 mInertialJointDrivers[index]->SetIsEnabled(true);
+#if defined(RAD_ANDROID)
+                if(mUserDrivingCar && SharOpenXR::IsVrModeEnabled())
+                    mGeometryVehicle->HideFlappingPiece(mHoodJoint,true);
+#endif
             }
         }
 

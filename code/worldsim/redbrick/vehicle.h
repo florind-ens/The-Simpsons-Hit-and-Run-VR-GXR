@@ -343,6 +343,7 @@ public:
     // RenderManager/EntityDSG Interface
     //----------------------------------
     void Display();
+    void DisplayCsmReceiver();
     rmt::Vector*        pPosition();
     const rmt::Vector&  rPosition();
 
@@ -459,6 +460,7 @@ public:
 
     const rmt::Vector& GetPassengerLocation( void ) const;
     const rmt::Vector& GetDriverLocation( void ) const;
+    void GetDriverWorldPosition( rmt::Vector* position, float localEyeHeight = 0.0f ) const;
 
     //--------------
     // sfx interface

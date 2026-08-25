@@ -24,6 +24,9 @@
 #endif
 
 #include <camera/supercamcontroller.h>
+#ifdef RAD_ANDROID
+#include <vr/openxrmanager.h>
+#endif
 
 //******************************************************************************
 //
@@ -87,11 +90,19 @@ void SuperCamController::LoadControllerMappings( unsigned int controllerId )
     Map( "RightStickX",     stickX,             0, controllerId );
     Map( "RightStickY",     stickY,             0, controllerId );
     Map( "LeftTrigger",     zToggle,            0, controllerId );
+#if !defined(RAD_ANDROID)
     Map( "RightTrigger",    lookToggle,         0, controllerId );
+#endif
     Map( "A",               A,                  0, controllerId );
+    #if defined(RAD_ANDROID)
+    if( !SharOpenXR::IsVrModeEnabled() )
+    #endif
     Map( "RightThumb",      toggleFirstPerson,  0, controllerId );
     Map( "LeftStickY",      leftStickY,         0, controllerId );
     Map( "Start",           start,              0, controllerId );
+    #if defined(RAD_ANDROID)
+    if( !SharOpenXR::IsVrModeEnabled() )
+    #endif
     Map( "Black",           cameraToggle,       0, controllerId );
     #endif
 

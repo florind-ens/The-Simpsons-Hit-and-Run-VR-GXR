@@ -128,6 +128,7 @@ protected:
     // Tracks which physical input slots were written by virtual input, so they
     // can be cleared safely without blindly resetting the whole controller state.
     bool mVirtualInputActive[ Input::MaxPhysicalButtons ];
+    bool mVirtualInputPending[ Input::MaxPhysicalButtons ];
     Mappable* mMappable[ Input::MaxMappables ];
     bool mbInputPointsRegistered;
 

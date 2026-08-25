@@ -95,6 +95,10 @@ void  SuperCamManager::DestroyInstance()
 {
    rAssert(mspInstance != NULL);
    delete mspInstance;
+   // SDLActivity can invoke SDL_main again without terminating the Java
+   // process.  Leaving this pointer dangling makes the second startup reuse
+   // the cameras freed by the first shutdown.
+   mspInstance = NULL;
 }
 
 //=============================================================================

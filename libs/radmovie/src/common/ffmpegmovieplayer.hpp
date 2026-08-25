@@ -144,6 +144,7 @@ class radMoviePlayer
         unsigned int m_ClockOffsetMs;
         // opcional (si lo haces como miembro, mejor que static):
         bool m_RenderedFirstEarly;
+        bool m_InputEof;
 };
 
 #endif // ! RAD_MOVIEPLAYER_USE_BINK

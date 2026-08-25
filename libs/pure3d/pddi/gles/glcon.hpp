@@ -86,6 +86,15 @@ public :
     pglDisplay* GetDisplay(void) {return display;}
     void SetShaderProgram(pglProgram* program);
     void SetTextureEnvironment(const pglTextureEnv* texEnv);
+#if defined(RAD_ANDROID)
+    bool BeginSunShadowMap(int cascadeIndex,const pddiMatrix& eyeCameraToWorld,
+                           pddiMatrix* lightWorldToCamera,
+                           pddiMatrix* lightCameraToWorld);
+    void EndSunShadowMap(int cascadeIndex,const pddiMatrix& eyeCameraToWorld);
+    void EnableSunShadowReceivers(bool enable);
+    void BeginSunShadowOverlay();
+    void EndSunShadowOverlay();
+#endif
 
     unsigned contextID;
 
@@ -109,6 +118,39 @@ protected:
     pglProgram* textureProgram;
     pglProgram* alphaTestProgram;
     pglProgram* currentProgram;
+#if defined(RAD_ANDROID)
+    pglProgram* shadowDepthProgram;
+    pglProgram* shadowOverlayProgram;
+    pglProgram* particleTextureProgram;
+    enum { SHADOW_CASCADE_COUNT=3 };
+    GLuint shadowFramebuffer[SHADOW_CASCADE_COUNT];
+    GLuint shadowTexture[SHADOW_CASCADE_COUNT];
+    GLuint shadowDepthBuffer[SHADOW_CASCADE_COUNT];
+    bool shadowPass,shadowReady[SHADOW_CASCADE_COUNT];
+    bool shadowRenderedThisFrame[SHADOW_CASCADE_COUNT];
+    int shadowCurrentCascade;
+    bool shadowStableCentreValid;
+    rmt::Vector shadowStableCentre;
+    bool shadowCascadeCentreValid[SHADOW_CASCADE_COUNT];
+    rmt::Vector shadowCascadeCentre[SHADOW_CASCADE_COUNT];
+    bool shadowOverlayPass;
+    bool shadowReceiverEnabled;
+    GLint shadowSavedFramebuffer, shadowSavedViewport[4];
+    GLint shadowSavedActiveTexture, shadowSavedRenderbuffer;
+    GLfloat shadowSavedClearColour[4];
+    GLboolean shadowSavedScissor, shadowSavedDepthTest, shadowSavedDepthMask;
+    GLboolean shadowSavedColourMask[4], shadowSavedCull;
+    GLboolean shadowSavedPolygonOffset;
+    GLint shadowSavedDepthFunc, shadowSavedCullFace;
+    GLfloat shadowSavedClearDepth;
+    GLfloat shadowSavedPolygonFactor, shadowSavedPolygonUnits;
+    GLboolean shadowOverlaySavedBlend, shadowOverlaySavedDepthMask;
+    GLint shadowOverlaySavedBlendSrc, shadowOverlaySavedBlendDst;
+    GLint shadowOverlaySavedDepthFunc;
+    pddiMatrix shadowSavedProjection;
+    pddiMatrix shadowWorldToClip[SHADOW_CASCADE_COUNT];
+    pddiMatrix shadowReceiverMatrix[SHADOW_CASCADE_COUNT];
+#endif
 
 //   int nBuffered;
 //   unsigned currentMatId;

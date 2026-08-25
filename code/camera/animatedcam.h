@@ -74,6 +74,11 @@ protected:
     static void       SetCameraSwitchPending( const bool pending );
 
     SuperCam::Type      m_NextCameraType;
+#if defined(RAD_ANDROID)
+    bool                mVrSmoothingValid;
+    rmt::Vector         mVrSmoothedPosition;
+    rmt::Vector         mVrSmoothedTarget;
+#endif
 
     //Prevent wasteful constructor creation.
     AnimatedCam( const AnimatedCam& AnimatedCam );

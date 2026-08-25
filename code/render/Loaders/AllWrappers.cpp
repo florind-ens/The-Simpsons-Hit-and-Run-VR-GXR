@@ -119,6 +119,7 @@ void  AllWrappers::DestroyInstance()
    rAssert(mspInstance != NULL);
 
    delete mspInstance;
+   mspInstance = NULL;
 }
 
 //========================================================================

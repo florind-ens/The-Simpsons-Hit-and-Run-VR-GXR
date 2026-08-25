@@ -1,4 +1,7 @@
 #include <render/Culling/WorldScene.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 #include <render/Culling/SpatialTreeFactory.h>
 #include <render/Culling/SpatialTree.h>
 #include <render/Culling/SpatialTreeIter.h>
@@ -14,6 +17,9 @@
 #include <meta/triggervolume.h>
 #include <algorithm>
 #include <functional>
+#if defined(RAD_ANDROID)
+#include <SDL.h>
+#endif
 
 #include <render/Culling/NodeFLL.h>
 
@@ -29,6 +35,7 @@
 #include <worldsim/avatar.h>
 #include <worldsim/redbrick/vehicle.h>
 #include <worldsim/character/character.h>
+#include <mission/animatedicon.h>
 #include <pddi/pdditype.hpp>
 
 #ifdef DEBUGWATCH
@@ -154,6 +161,7 @@ WorldScene::WorldScene()
     mCamPlanes.Allocate(6);
 
     mpZSortsPassShadowCasters.reserve(300);
+    mCsmDynamicCasters.reserve(1000);
 
 #ifdef DEBUGWATCH
    radDbgWatchAddUnsignedInt( &mDebugZSWalkTiming, "ZSort Walk micros", "WorldScene", NULL, NULL );
@@ -281,6 +289,15 @@ bool WorldScene::IsSphereInCone( rmt::Vector& irCenter, float iRadius )
     {
         return true;
     }
+
+#if defined(RAD_ANDROID)
+    if( SharOpenXR::IsVrModeEnabled() )
+    {
+        // The VR cone is yaw-only and deliberately wide, so it retains the
+        // whole vertical headset view without submitting every object in the
+        // streaming sphere to both eyes.
+    }
+#endif
 
     // nv:  cull small things that are far away
     const float SMALL_THING = 0.85f;
@@ -925,6 +942,7 @@ void WorldScene::RenderScene( unsigned int iFilter, tPointCamera* ipCam  )
     rTuneAssert( mpZSortsPass2.capacity() == 5000 );
     mpZSortsPassShadowCasters.resize(0);
     rTuneAssert( mpZSortsPassShadowCasters.capacity() == 300 );
+    mCsmDynamicCasters.resize(0);
 
     mShadowCastersPass1.ClearUse(); 
     //mShadowCastersPass2.ClearUse(); 
@@ -1095,6 +1113,11 @@ BEGIN_PROFILE("list construction")
             if(!IsSphereInCone(ObjectSphere.centre, ObjectSphere.radius))
                 continue;
 
+            if(!mStaticTreeWalker.rCurrent().mSEntityElems[i]->mTranslucent)
+            {
+                mCsmDynamicCasters.push_back(mStaticTreeWalker.rCurrent().mSEntityElems[i]);
+            }
+
             //mStaticTreeWalker.rCurrent().mSEntityElems[i]->SetShader(mpTempShader,0);
             switch(3)//mStaticTreeWalker.rCurrent().mSEntityElems[i]->CastsShadow())
             {
@@ -1155,6 +1178,8 @@ BEGIN_PROFILE("list construction")
             mStaticTreeWalker.rCurrent().mAnimCollElems[i]->GetBoundingSphere(&ObjectSphere);
             if(!IsSphereInCone(ObjectSphere.centre, ObjectSphere.radius))
                 continue;
+
+            mCsmDynamicCasters.push_back(mStaticTreeWalker.rCurrent().mAnimCollElems[i]);
 
             switch(3)//mStaticTreeWalker.rCurrent().mAnimCollElems[i]->CastsShadow())
             {
@@ -1218,6 +1243,8 @@ BEGIN_PROFILE("list construction")
             if(!IsSphereInCone(ObjectSphere.centre, ObjectSphere.radius))
                 continue;
 
+            mCsmDynamicCasters.push_back(mStaticTreeWalker.rCurrent().mAnimElems[i]);
+
             switch(3)//mStaticTreeWalker.rCurrent().mAnimElems[i]->CastsShadow())
             {
             case 1:
@@ -1279,6 +1306,11 @@ BEGIN_PROFILE("list construction")
             mStaticTreeWalker.rCurrent().mDPhysElems[i]->GetBoundingSphere(&ObjectSphere);
             if(!IsSphereInCone(ObjectSphere.centre, ObjectSphere.radius))
                 continue;
+
+            // Do not use the legacy CastsShadow flag here. Most movable
+            // objects never set it even though their full mesh is suitable
+            // for the dedicated CSM depth program.
+            mCsmDynamicCasters.push_back(mStaticTreeWalker.rCurrent().mDPhysElems[i]);
 
             switch(mStaticTreeWalker.rCurrent().mDPhysElems[i]->CastsShadow())
             {
@@ -1355,6 +1387,11 @@ BEGIN_PROFILE("list construction")
             mStaticTreeWalker.rCurrent().mSPhysElems[i]->GetBoundingSphere(&ObjectSphere);
             if(!IsSphereInCone(ObjectSphere.centre, ObjectSphere.radius))
                 continue;
+
+            if(!mStaticTreeWalker.rCurrent().mSPhysElems[i]->mTranslucent)
+            {
+                mCsmDynamicCasters.push_back(mStaticTreeWalker.rCurrent().mSPhysElems[i]);
+            }
 
             switch(3)//mStaticTreeWalker.rCurrent().mSPhysElems[i]->CastsShadow())
             {
@@ -1641,12 +1678,16 @@ void WorldScene::RenderShadows()
 Draw simple blob shadows under a character. Don't call within the normal
 shadow generator setup since the tris won't shade properly.
 ========================================================================*/
-void WorldScene::RenderSimpleShadows( void )
+void WorldScene::RenderSimpleShadows( bool charactersOnly,
+                                      Vehicle* excludedVehicle )
 {
     p3d::pddi->SetZWrite(false);
 	for( int i = 0; i < mShadowCastersPass1.mUseSize; ++i )
 	{
-		mShadowCastersPass1[ i ]->DisplaySimpleShadow();
+        IEntityDSG* caster=mShadowCastersPass1[i];
+        if(caster==excludedVehicle) continue;
+        if(charactersOnly && dynamic_cast<Character*>(caster)==NULL) continue;
+		caster->DisplaySimpleShadow();
 	}
 //	for( int i = 0; i < mShadowCastersPass2.mUseSize; ++i )
 //	{
@@ -1654,7 +1695,10 @@ void WorldScene::RenderSimpleShadows( void )
 //	}
     for(int i=mpZSortsPassShadowCasters.size()-1; i>-1; i--)
 	{
-		mpZSortsPassShadowCasters[i]->DisplaySimpleShadow();
+        IEntityDSG* caster=mpZSortsPassShadowCasters[i];
+        if(caster==excludedVehicle) continue;
+        if(charactersOnly && dynamic_cast<Character*>(caster)==NULL) continue;
+		caster->DisplaySimpleShadow();
 	}
     p3d::pddi->SetZWrite( true );
 }
@@ -1759,6 +1803,10 @@ void WorldScene::Render(  unsigned int viewIndex )
     //BEGIN_PROFILE("Mark Camera")
 
     tPointCamera* pCam;
+#if defined(RAD_ANDROID)
+    rmt::Matrix originalCullCamera;
+    bool vrCullCameraApplied=false;
+#endif
 
 //////////////////////////////////////////////////////////////////////////
 #ifdef DEBUGWATCH
@@ -1775,6 +1823,15 @@ void WorldScene::Render(  unsigned int viewIndex )
 #endif
 //////////////////////////////////////////////////////////////////////////
             pCam = (tPointCamera*)GetSuperCamManager()->GetSCC(0)->GetCamera();
+#if defined(RAD_ANDROID)
+            originalCullCamera=pCam->GetCameraToWorldMatrix();
+            rmt::Matrix vrCullCamera;
+            if(SharOpenXR::GetActiveCullingCamera(&vrCullCamera))
+            {
+                pCam->SetCameraMatrix(&vrCullCamera);
+                vrCullCameraApplied=true;
+            }
+#endif
 BEGIN_PROFILE("cam viz")
             if( mRenderAll )    mStaticTreeWalker.OrTreeVis( msVisible0 );
             else                MarkCameraVisible( pCam, msVisible0 );
@@ -1787,6 +1844,9 @@ END_PROFILE("cam viz")
 #endif
 //////////////////////////////////////////////////////////////////////////
             RenderScene( msVisible0, pCam );
+#if defined(RAD_ANDROID)
+            if(vrCullCameraApplied) pCam->SetCameraMatrix(&originalCullCamera);
+#endif
             break;
         }
     case 1:
@@ -2217,14 +2277,46 @@ void WorldScene::MarkCameraVisible( tPointCamera* pCam, unsigned int iFilter )
 #if 1
    SphereSP ViewVolSP;
    Vector3f CamPosn, ViewVector, FarPlaneExtentVect;
+#if defined(RAD_ANDROID)
+   // SetCameraMatrix updates the VR transform, but tPointCamera::GetTarget()
+   // retains the gameplay camera's cached target. Read the final matrix
+   // directly so visibility follows the HMD forward vector.
+   const rmt::Vector& vrPos=pCam->GetCameraToWorldMatrix().Row(3);
+   const rmt::Vector& vrForward=pCam->GetCameraToWorldMatrix().Row(2);
+   CamPosn.Set(vrPos.x,vrPos.y,vrPos.z);
+   ViewVector.Set(vrForward.x,vrForward.y,vrForward.z);
+   ViewVector.Normalize();
+#else
    pCam->GetPosition(&CamPosn);
    pCam->GetTarget(&ViewVector); ViewVector.Sub( CamPosn ); ViewVector.Normalize(); 
+#endif
 
-   SetVisCone( ViewVector, CamPosn, pCam->GetFieldOfView()/1.87f );//this tweak was done to account for the pop-in along the diagonal, especially evident in the interiors//0.8726645f ); // 50 degrees 1.745329f ); //100 degrees
-
-   ViewVector.Mult( mDrawDist / 2.0f );
-   ViewVector.Add( CamPosn );
-   ViewVolSP.SetTo( ViewVector, mDrawDist / 2.0f );
+#if defined(RAD_ANDROID)
+   if( SharOpenXR::IsVrModeEnabled() )
+   {
+      // Spatial streaming must cover the union of both eyes and remain
+      // stable while the player pitches the headset.  A sphere tangent to
+      // the camera loses the ground as soon as its centre follows an upward
+      // look. Use yaw-only placement with overlap behind/above/below the HMD.
+      ViewVector.y=0.0f;
+      if( ViewVector.MagnitudeSqr()<0.0001f )
+      {
+         ViewVector.Set(0.0f,0.0f,1.0f);
+      }
+      ViewVector.Normalize();
+      SetVisCone( ViewVector, CamPosn, rmt::PI_BY2 );
+      ViewVector.Mult( mDrawDist*0.50f );
+      ViewVector.Add( CamPosn );
+      ViewVolSP.SetTo( ViewVector, mDrawDist*0.52f );
+   }
+   else
+#endif
+   {
+      SetVisCone( ViewVector, CamPosn, pCam->GetFieldOfView()/1.87f );//this tweak was done to account for the pop-in along the diagonal, especially evident in the interiors//0.8726645f ); // 50 degrees 1.745329f ); //100 degrees
+      ViewVector.Mult( mDrawDist / 2.0f );
+      ViewVector.Add( CamPosn );
+      ViewVolSP.SetTo( ViewVector, mDrawDist / 2.0f );
+   }
 
 
    //comment this out
@@ -2294,6 +2386,91 @@ void WorldScene::MarkCameraVisible( tPointCamera* pCam, unsigned int iFilter )
    //ViewVolSP.GeneratePoints();
    //mStaticTreeWalker.MarkAll( ViewVolSP, iFilter );
    mStaticTreeWalker.MarkAllSphere( ViewVolSP, iFilter );
+}
+
+void WorldScene::RenderCsmCasters(bool includeStatic,bool includeDynamic,
+                                  const rmt::Matrix& lightWorldToCamera,
+                                  float halfWidth,float halfDepth)
+{
+    DSG_SET_PROFILE('C')
+#if defined(RAD_ANDROID)
+    // Cull directly against the sun's orthographic volume. The former player-
+    // centred cylinder admitted many objects that were outside the actual map,
+    // especially along its corners and the light-depth axis.
+    const auto isInShadowVolume=[&](IEntityDSG* entity)->bool
+    {
+        if(!entity) return false;
+        // Animated pickups (wrenches, mission collectibles, etc.) commonly
+        // mark the container translucent because it also owns glow particles;
+        // their solid model still needs to enter the depth pass.
+        // Composite translucency is too conservative for fences, crates and
+        // state props. The shadow shader rejects alpha-tested pixels itself.
+        rmt::Sphere sphere;
+        entity->GetBoundingSphere(&sphere);
+        rmt::Vector lightCentre;
+        lightWorldToCamera.Transform(sphere.centre,&lightCentre);
+        return rmt::Fabs(lightCentre.x)<=halfWidth+sphere.radius &&
+               rmt::Fabs(lightCentre.y)<=halfWidth+sphere.radius &&
+               rmt::Fabs(lightCentre.z)<=halfDepth+sphere.radius;
+    };
+
+    unsigned casterCount=0;
+    for(int nodeIndex=mStaticTreeWalker.NumNodes()-1;nodeIndex>=0;--nodeIndex)
+    {
+        SpatialNode& node=mStaticTreeWalker.rIthNode(nodeIndex);
+        // The old CSM path inspected every entity in every streamed spatial
+        // node three times per frame. Reject whole nodes before requesting
+        // individual bounding spheres. A small margin preserves large models
+        // whose origin lies just outside a cascade's caster cylinder.
+        const Bounds3f& nodeBounds=node.mBBox.mBounds;
+        const rmt::Vector nodeCentre=(nodeBounds.mMin+nodeBounds.mMax)*0.5f;
+        const rmt::Vector nodeExtent=(nodeBounds.mMax-nodeBounds.mMin)*0.5f;
+        const float nodeRadius=nodeExtent.Magnitude();
+        rmt::Vector lightNodeCentre;
+        lightWorldToCamera.Transform(nodeCentre,&lightNodeCentre);
+        if(rmt::Fabs(lightNodeCentre.x)>halfWidth+nodeRadius ||
+           rmt::Fabs(lightNodeCentre.y)>halfWidth+nodeRadius ||
+           rmt::Fabs(lightNodeCentre.z)>halfDepth+nodeRadius)
+            continue;
+        // Roads and terrain tiles are receivers, not useful sun-shadow
+        // casters. Their large, almost-flat drawables were projecting the
+        // rectangular streaming chunks themselves onto nearby ground.
+        if(includeStatic)
+        {
+            for(int i=node.mSEntityElems.mUseSize-1;i>=0;--i)
+            {
+                StaticEntityDSG* entity=node.mSEntityElems[i];
+                if(!isInShadowVolume(entity)) continue;
+                rmt::Box3D box;
+                entity->GetBoundingBox(&box);
+                const float width=box.high.x-box.low.x;
+                const float height=box.high.y-box.low.y;
+                const float depth=box.high.z-box.low.z;
+                if(height<0.75f && (width>8.0f || depth>8.0f)) continue;
+                entity->Display();
+                ++casterCount;
+            }
+        }
+#define DISPLAY_CSM_ARRAY(arrayName) \
+        for(int i=node.arrayName.mUseSize-1;i>=0;--i) \
+        { \
+            IEntityDSG* entity=node.arrayName[i]; \
+            if(isInShadowVolume(entity)) { entity->Display(); ++casterCount; } \
+        }
+        if(includeStatic) { DISPLAY_CSM_ARRAY(mSPhysElems) }
+        if(includeDynamic)
+        {
+            DISPLAY_CSM_ARRAY(mAnimCollElems)
+            DISPLAY_CSM_ARRAY(mAnimElems)
+            DISPLAY_CSM_ARRAY(mDPhysElems)
+        }
+#undef DISPLAY_CSM_ARRAY
+    }
+
+#else
+    for(int i=(int)mCsmDynamicCasters.size()-1;i>=0;--i)
+        mCsmDynamicCasters[i]->Display();
+#endif
 }
 /////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////

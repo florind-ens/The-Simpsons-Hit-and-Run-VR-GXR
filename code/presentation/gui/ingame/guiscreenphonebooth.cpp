@@ -40,6 +40,9 @@
 #include <worldsim/character/character.h>
 #include <worldsim/coins/coinmanager.h>
 #include <worldsim/vehiclecentral.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 
 #include <Screen.h>
 #include <Page.h>
@@ -443,6 +446,15 @@ void CGuiScreenPhoneBooth::HandleMessage
     {
         if( message == GUI_MSG_CONTROLLER_L1 || message == GUI_MSG_CONTROLLER_R1 )
         {
+#if defined(RAD_ANDROID)
+            if(!SharOpenXR::IsDeveloperMenusEnabled())
+            {
+                message=GUI_MSG_UPDATE;
+                param1=0;
+            }
+            else
+#endif
+            {
 #ifdef FINAL
             if( GetCheatInputSystem()->IsCheatEnabled( CHEAT_ID_UNLOCK_VEHICLES ) &&
                 GetCharacterSheetManager()->QueryPercentGameCompleted() > 99.999f )
@@ -483,6 +495,7 @@ void CGuiScreenPhoneBooth::HandleMessage
                     this->SetButtonVisible( BUTTON_ICON_ACCEPT,
                                             this->GetCurrentPreviewObject()->isUnlocked );
                 }
+            }
             }
         }
     }

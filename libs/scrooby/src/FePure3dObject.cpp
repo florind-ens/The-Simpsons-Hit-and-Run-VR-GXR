@@ -28,6 +28,9 @@
 #include "FeScreen.h"
 #include <radmath/radmath.hpp>
 #include "ResourceManager/FeResourceManager.h"
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 
 // TC [HACK]: Override camera settings.
 //
@@ -417,10 +420,19 @@ void FePure3dObject::Render()
 
     // set colour write
     //
+    bool alphaWriteEnabled = true;
+#if defined(RAD_ANDROID)
+    // Hole0 is the depth-only circular mask for the spatial radar. The legacy
+    // path always writes alpha even when colour writes are disabled, producing
+    // opaque black corners in a transparent offscreen texture. Keep every
+    // colour channel untouched while the mask writes depth.
+    if( SharOpenXR::IsRadarRendering() && !m_colourWriteEnabled )
+        alphaWriteEnabled = false;
+#endif
     p3d::pddi->SetColourWrite( m_colourWriteEnabled,
                                m_colourWriteEnabled,
                                m_colourWriteEnabled,
-                               true );
+                               alphaWriteEnabled );
 
     // save z-buffer setting
     //
@@ -470,6 +482,30 @@ void FePure3dObject::Render()
     p3d::stack->LoadIdentity();
     currentView->SetCamera( m_Camera );
 
+#if defined(RAD_ANDROID)
+    const bool vrEmbeddedHud = m_isWideScreenCorrectionEnabled;
+    if( vrEmbeddedHud )
+    {
+        SharOpenXR::SetEmbeddedHudRendering( true );
+    }
+    rmt::Matrix originalVrCamera;
+    bool vrCameraChanged = false;
+    // HUD map Pure3D widgets use this flag.  Their camera is a map-space
+    // camera and must stay inside the 2D clipped map rectangle, not inherit
+    // the HMD eye pose.  Other embedded 3D menu objects remain stereoscopic.
+    if( m_Camera && !m_isWideScreenCorrectionEnabled )
+    {
+        originalVrCamera = m_Camera->GetCameraToWorldMatrix();
+        rmt::Matrix eyeCamera;
+        if( SharOpenXR::GetActiveEyeCamera( m_Camera, &eyeCamera ) )
+        {
+            SharOpenXR::SetWorldRendering( true );
+            m_Camera->SetCameraMatrix( &eyeCamera );
+            vrCameraChanged = true;
+        }
+    }
+#endif
+
     if( m_Camera )
     {
 //        m_Camera->SetNearPlane( m_CameraNearPlane );
@@ -510,6 +546,17 @@ void FePure3dObject::Render()
 
     // restore everything we changed
     //
+#if defined(RAD_ANDROID)
+    if( vrCameraChanged )
+    {
+        m_Camera->SetCameraMatrix( &originalVrCamera );
+        SharOpenXR::SetWorldRendering( false );
+    }
+    if( vrEmbeddedHud )
+    {
+        SharOpenXR::SetEmbeddedHudRendering( false );
+    }
+#endif
     originalCamera->SetState();
     currentView->SetCamera( originalCamera );
     originalCamera->Release();

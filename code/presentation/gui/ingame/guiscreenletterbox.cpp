@@ -29,11 +29,23 @@
 #include <Page.h>
 #include <Pure3dObject.h>
 #include <Screen.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 //===========================================================================
 // Global Data, Local Data, Local Classes
 //===========================================================================
 
 const float BAR_SLIDING_TIME = 500.0f; // in msec
+#if defined(RAD_ANDROID)
+// The complete legacy GUI is scaled to 40% for a comfortable VR HUD.  A
+// letterbox translated by the original 240 pixels would therefore remain
+// half-visible.  Compensate only its fully-open (off-screen) position; the
+// visible cutscene positions remain unchanged.
+const int LETTERBOX_OPEN_OFFSET = 600;
+#else
+const int LETTERBOX_OPEN_OFFSET = 240;
+#endif
 bool CGuiScreenLetterBox::m_enableReopen = false;
 bool CGuiScreenLetterBox::m_forceOpen = false;
 static bool g_SurpressNextSkipButton  = false;
@@ -87,6 +99,13 @@ CGuiScreenLetterBox::CGuiScreenLetterBox
     //
     m_topBar = m_Page->GetGroup( "TopBar" );
     m_bottomBar = m_Page->GetGroup( "BottomBar" );
+#if defined(RAD_ANDROID)
+    if( SharOpenXR::IsVrModeEnabled() )
+    {
+        m_topBar->SetVisible( false );
+        m_bottomBar->SetVisible( false );
+    }
+#endif
 
     // get letter box buttons from 'LetterBoxButtons.pag'
     //
@@ -134,10 +153,10 @@ CGuiScreenLetterBox::CGuiScreenLetterBox
 
     SetIntroFromOpen();
     g_TopOut.SetCoordsStart(  0,  240 - 70 );
-    g_TopOut.SetCoordsEnd(    0,  240      );
+    g_TopOut.SetCoordsEnd(    0,  LETTERBOX_OPEN_OFFSET );
     g_TopOut.SetTimeInterval( BAR_SLIDING_TIME );
     g_BottomOut.SetCoordsStart( 0, -240 + 70 );
-    g_BottomOut.SetCoordsEnd(   0, -240      );
+    g_BottomOut.SetCoordsEnd(   0, -LETTERBOX_OPEN_OFFSET );
     g_BottomOut.SetTimeInterval( BAR_SLIDING_TIME );
     g_TopClose.SetCoordsStart( 0, 240 - 70 );
     g_TopClose.SetCoordsEnd( 0, 0 );
@@ -199,9 +218,9 @@ void CGuiScreenLetterBox::CheckIfScreenShouldBeBlank()
     else
     {
         m_topBar->ResetTransformation();
-        m_topBar->Translate( 0, 240 );
+        m_topBar->Translate( 0, LETTERBOX_OPEN_OFFSET );
         m_bottomBar->ResetTransformation();
-        m_bottomBar->Translate( 0, -240 );
+        m_bottomBar->Translate( 0, -LETTERBOX_OPEN_OFFSET );
     }
 }
 
@@ -246,6 +265,15 @@ void CGuiScreenLetterBox::HandleMessage
         ResetMovableObjects();
         float deltaT = static_cast< float >( param1 );
         UpdateTransitions( deltaT );
+#if defined(RAD_ANDROID)
+        if( SharOpenXR::IsVrModeEnabled() )
+        {
+            // Letterbox transitions explicitly make these groups visible
+            // again. Enforce the VR policy after every transition update.
+            m_topBar->SetVisible( false );
+            m_bottomBar->SetVisible( false );
+        }
+#endif
 
 #ifdef RAD_DEMO
         // reset idle timer when we're in a conversation
@@ -369,9 +397,16 @@ void CGuiScreenLetterBox::InitIntro()
     m_Iris->SetVisible( false );
     m_topBar->SetVisible( true );
     m_bottomBar->SetVisible( true );
+#if defined(RAD_ANDROID)
+    if( SharOpenXR::IsVrModeEnabled() )
+    {
+        m_topBar->SetVisible( false );
+        m_bottomBar->SetVisible( false );
+    }
+#endif
     ResetTransitions();
-    m_topBar->Translate( 0, 240 );
-    m_bottomBar->Translate( 0, -240 );
+    m_topBar->Translate( 0, LETTERBOX_OPEN_OFFSET );
+    m_bottomBar->Translate( 0, -LETTERBOX_OPEN_OFFSET );
     g_TopIn.Activate();
     g_BottomIn.Activate();
     m_elapsedTime = 0;
@@ -680,10 +715,10 @@ void CGuiScreenLetterBox::SetIntroFromClosed()
 //===========================================================================
 void CGuiScreenLetterBox::SetIntroFromOpen()
 {
-    g_TopIn.SetCoordsStart(  0,  240      );
+    g_TopIn.SetCoordsStart(  0,  LETTERBOX_OPEN_OFFSET );
     g_TopIn.SetCoordsEnd(    0,  240 - 70 );
     g_TopIn.SetTimeInterval( BAR_SLIDING_TIME );
-    g_BottomIn.SetCoordsStart( 0, -240      );
+    g_BottomIn.SetCoordsStart( 0, -LETTERBOX_OPEN_OFFSET );
     g_BottomIn.SetCoordsEnd(   0, -240 + 70 );
     g_BottomIn.SetTimeInterval( BAR_SLIDING_TIME );
 }

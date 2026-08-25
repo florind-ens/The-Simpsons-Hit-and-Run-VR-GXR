@@ -12,11 +12,19 @@
 
 #include <pddi/base/debug.hpp>
 #include <math.h>
+
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 #include <string.h>
 #include <SDL.h>
 #include <vector>
 
 #include <microprofile.h>
+
+#if defined(RAD_ANDROID)
+int gPglCsmBillboardMode=0; // 0 normal, 1 caster, 2 receiver overlay
+#endif
 
 // vertex arrays rendering
 GLenum primTypeTable[5] =
@@ -73,6 +81,22 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
     device = dev;
     display = disp;
     currentProgram = nullptr;
+#if defined(RAD_ANDROID)
+    shadowDepthProgram=NULL;
+    shadowOverlayProgram=NULL;
+    particleTextureProgram=NULL;
+    for(int i=0;i<SHADOW_CASCADE_COUNT;++i)
+    {
+        shadowFramebuffer[i]=shadowTexture[i]=shadowDepthBuffer[i]=0;
+        shadowReady[i]=shadowRenderedThisFrame[i]=false;
+        shadowCascadeCentreValid[i]=false;
+    }
+    shadowPass=false;
+    shadowCurrentCascade=0;
+    shadowStableCentreValid=false;
+    shadowReceiverEnabled=false;
+    shadowOverlayPass=false;
+#endif
 
     device->AddRef();
     display->AddRef();
@@ -186,6 +210,7 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
         "uniform mat4 projection;\n"
         "uniform mat4 modelview;\n"
         "uniform mat4 normalmatrix;\n"
+        "uniform mat4 shadowMatrix; uniform mat4 shadowMatrix1; uniform mat4 shadowMatrix2;\n"
 
         // Lights
         "uniform struct LightParams {\n"
@@ -208,18 +233,29 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
         #ifdef RAD_ANDROID
         // Indica si el material debe recibir iluminación.
         "uniform int lit;\n"
+        "uniform int vehiclePaint;\n"
+        "uniform int vehicleDentCount; uniform vec4 vehicleDents[4];\n"
         #endif
 
         "varying vec2 tc;\n"
         "varying vec4 cpri;\n"
         "varying vec4 csec;\n"
+        "varying vec3 paintNormal;\n"
+        "varying vec3 paintPosition;\n"
+        "varying float paintEnabled;\n"
+        "varying float pixelLit;\n"
+        "varying vec4 shadowCoord0; varying vec4 shadowCoord1; varying vec4 shadowCoord2; varying float shadowViewDistance;\n"
 
         "vec3 direction(vec4 p1, vec4 p2) { return normalize(p2.xyz * sign(p1.w) - p1.xyz * sign(p2.w)); }\n"
         "float power(float x, float y) { return y != 0.0 ? pow(x,y) : 1.0; }\n"
         "float product(vec3 x, vec3 y) { return max(dot(x,y), 0.0); }\n"
 
                 "void main() {\n"
-                "    vec4 V = modelview * vec4(position, 1.0);\n"
+                "    vec3 deformedPosition=position;\n"
+                "    if(vehicleDentCount>0){\n"
+                "      for(int di=0;di<4;++di){if(di>=vehicleDentCount)break; vec4 dent=vehicleDents[di]; vec3 delta=deformedPosition-dent.xyz; float radius=1.20+dent.w*0.65; float falloff=max(0.0,1.0-length(delta)/radius); falloff=falloff*falloff*(3.0-2.0*falloff); vec3 inward=normalize(-dent.xyz+vec3(0.0,0.20,0.0)); deformedPosition+=inward*(dent.w*falloff);}\n"
+                "    }\n"
+                "    vec4 V = modelview * vec4(deformedPosition, 1.0);\n"
                  
 
     #ifdef RAD_ANDROID
@@ -230,6 +266,18 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
     #endif
 
             "    vec3 spec = vec3(0.0);\n"
+            "    paintNormal = normalize(mat3(normalmatrix) * normal);\n"
+            "    paintPosition = V.xyz;\n"
+            "    paintEnabled = float(vehiclePaint);\n"
+            // Enhanced Materials is a single on/off switch. Only genuinely
+            // lit assets move from Gouraud to per-pixel lighting; SHAR's
+            // unlit world geometry already has its light baked into albedo.
+            // Vehicle bodywork covers a very large number of pixels up close.
+            // Keep its authored multi-light result from this vertex pass and
+            // reserve per-fragment lighting for world/character profiles. The
+            // dedicated Phong paint highlight still runs per fragment.
+            "    pixelLit = vehiclePaint>0&&vehiclePaint!=2&&lit!=0?1.0:0.0;\n"
+            "    shadowCoord0=shadowMatrix*V; shadowCoord1=shadowMatrix1*V; shadowCoord2=shadowMatrix2*V; shadowViewDistance=length(V.xyz);\n"
 
     #ifdef RAD_ANDROID
             // Los materiales no iluminados deben conservar directamente
@@ -258,44 +306,97 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
 
         #ifdef RAD_ANDROID
                 "    }\n"
+                // Keep the game's baked/base lighting. Phong is layered over
+                // it in the fragment stage instead of replacing its exposure.
         #endif
 
         "    tc = texcoord;\n"
+#ifdef RAD_ANDROID
+        // Pass raw albedo only when fragment lighting will replace Gouraud.
+        // This preserves the exact exposure of enhanced unlit scenery.
+        "    if(vehiclePaint>0&&vehiclePaint!=2&&lit!=0){cpri=vec4(color.rgb,color.a*dcm.a);csec=vec4(0.0);}\n"
+        "    else{cpri=color*vec4(diff,dcm.a);csec=vec4(spec,0.0);}\n"
+#else
         "    cpri = color * vec4(diff, dcm.a);\n"
         "    csec = vec4(spec, 0.0);\n"
+#endif
         "    gl_Position = projection * V;\n"
         "}\n"
     );
 
+#define PGL_CSM_FRAGMENT \
+        "uniform int shadowEnabled; uniform sampler2D shadowTex; uniform sampler2D shadowTex1; uniform sampler2D shadowTex2; uniform float shadowTexelSize; uniform float shadowTexelSize1; uniform float shadowTexelSize2; varying vec4 shadowCoord0; varying vec4 shadowCoord1; varying vec4 shadowCoord2; varying float shadowViewDistance;\n" \
+        "float csmC0(vec2 u,float d){return d-0.00018>texture2D(shadowTex,u).r?1.0:0.0;} float csmC1(vec2 u,float d){return d-0.00018>texture2D(shadowTex1,u).r?1.0:0.0;} float csmC2(vec2 u,float d){return d-0.00018>texture2D(shadowTex2,u).r?1.0:0.0;}\n" \
+        "float csmS0(vec3 p){vec2 q=p.xy/shadowTexelSize-0.5,f=fract(q),b=(floor(q)+0.5)*shadowTexelSize;return mix(mix(csmC0(b,p.z),csmC0(b+vec2(shadowTexelSize,0.0),p.z),f.x),mix(csmC0(b+vec2(0.0,shadowTexelSize),p.z),csmC0(b+vec2(shadowTexelSize),p.z),f.x),f.y);} float csmS1(vec3 p){vec2 q=p.xy/shadowTexelSize1-0.5,f=fract(q),b=(floor(q)+0.5)*shadowTexelSize1;return mix(mix(csmC1(b,p.z),csmC1(b+vec2(shadowTexelSize1,0.0),p.z),f.x),mix(csmC1(b+vec2(0.0,shadowTexelSize1),p.z),csmC1(b+vec2(shadowTexelSize1),p.z),f.x),f.y);} float csmS2(vec3 p){vec2 q=p.xy/shadowTexelSize2-0.5,f=fract(q),b=(floor(q)+0.5)*shadowTexelSize2;return mix(mix(csmC2(b,p.z),csmC2(b+vec2(shadowTexelSize2,0.0),p.z),f.x),mix(csmC2(b+vec2(0.0,shadowTexelSize2),p.z),csmC2(b+vec2(shadowTexelSize2),p.z),f.x),f.y);}\n" \
+        "bool csmValid(vec3 p){return p.x>0.001&&p.x<0.999&&p.y>0.001&&p.y<0.999&&p.z>0.0&&p.z<1.0;} float csmShadow(){if(shadowEnabled==0)return 0.0;if(shadowViewDistance<24.0){vec3 p0=shadowCoord0.xyz/shadowCoord0.w*0.5+0.5,p1=shadowCoord1.xyz/shadowCoord1.w*0.5+0.5;float s0=csmValid(p0)?csmS0(p0):0.0,s1=csmValid(p1)?csmS1(p1):0.0;return shadowViewDistance<20.0?max(s0,s1):mix(max(s0,s1),s1,(shadowViewDistance-20.0)*0.25);}vec3 p1=shadowCoord1.xyz/shadowCoord1.w*0.5+0.5;float s1=csmValid(p1)?csmS1(p1):0.0;if(shadowViewDistance<50.0)return s1;vec3 p2=shadowCoord2.xyz/shadowCoord2.w*0.5+0.5;float s2=csmValid(p2)?csmS2(p2):0.0;if(shadowViewDistance<56.0)return mix(s1,s2,(shadowViewDistance-50.0)/6.0);return s2;}\n"
+
+#define PGL_PIXEL_LIGHTING \
+        "varying float pixelLit;\n" \
+        "uniform int vehicleRearLightMode; uniform int vehicleRearLightCount; uniform vec3 vehicleRearLightPositions[8]; uniform vec3 vehicleRearLightDirections[8]; uniform vec3 vehicleRearLightColour;\n" \
+        "vec3 lightDirection(vec3 p,vec4 l){return normalize(l.xyz-p*l.w);}\n" \
+        "vec3 applyPixelLighting(vec3 base){if(pixelLit<0.5)return base;vec3 N=normalize(paintNormal),V=normalize(-paintPosition),diff=ecm.rgb+acm.rgb*acs.rgb,spec=vec3(0.0);for(int i=0;i<" PDDI_STRINGIZE(PDDI_MAX_LIGHTS) ";++i){if(lights[i].enabled==0)continue;vec3 L=lightDirection(paintPosition,lights[i].position);float ndl=max(dot(N,L),0.0),d=distance(paintPosition,lights[i].position.xyz);vec3 k=lights[i].attenuation;float att=lights[i].position.w!=0.0?1.0/(k.x+k.y*d+k.z*d*d):1.0;diff+=att*ndl*dcm.rgb*lights[i].colour.rgb;if(ndl>0.0){vec3 H=normalize(L+V);spec+=att*pow(max(dot(N,H),0.0),srm)*scm.rgb*lights[i].colour.rgb;}}return base*diff+spec;}\n" \
+        "vec3 applyVehicleRearLights(vec3 base){if(vehicleRearLightMode==0)return base;vec3 N=normalize(paintNormal),add=vec3(0.0);float worldSurface=1.0-step(0.25,abs(paintEnabled-1.0));for(int i=0;i<4;++i){if(i>=vehicleRearLightCount)break;vec3 fromLamp=paintPosition-vehicleRearLightPositions[i];float d2=dot(fromLamp,fromLamp),radius=vehicleRearLightMode==1?5.0:7.0;if(d2>=radius*radius)continue;float d=sqrt(d2);vec3 ray=fromLamp/max(d,0.001);float coneDot=dot(ray,vehicleRearLightDirections[i]);if(coneDot<=0.48)continue;float cone=smoothstep(0.48,0.78,coneDot),fall=1.0-d/radius,nearFade=smoothstep(0.30,0.85,d),facing=0.12+0.88*max(dot(N,-ray),0.0),road=1.0+0.70*max(N.y,0.0),receiver=mix(1.0,1.85,worldSurface);add+=vehicleRearLightColour*fall*fall*nearFade*cone*facing*road*receiver*(vehicleRearLightMode==1?0.736:0.624);}return clamp(base+add,0.0,1.0);}\n"
+
     GLuint fragmentShader = pglProgram::CompileShader( GL_FRAGMENT_SHADER,
-        "precision mediump float;\n"
+        "precision highp float;\n"
         "varying vec2 tc;\n"
         "varying vec4 cpri;\n"
         "varying vec4 csec;\n"
-
+        "varying vec3 paintNormal; varying vec3 paintPosition; varying float paintEnabled;\n"
+        "uniform struct LightParams { int enabled; vec4 position; vec4 colour; vec3 attenuation; } lights[" PDDI_STRINGIZE(PDDI_MAX_LIGHTS) "];\n"
+        "uniform vec4 acs; uniform vec4 acm; uniform vec4 dcm; uniform vec4 ecm; uniform vec4 scm; uniform float srm; uniform vec3 enhancedSunDirection;\n"
+        PGL_CSM_FRAGMENT
+        PGL_PIXEL_LIGHTING
+        "vec3 phongPaint(vec3 base){if(paintEnabled<0.5)return base;float car=1.0-step(0.25,abs(paintEnabled-2.0)),chr=1.0-step(0.25,abs(paintEnabled-3.0)),rough=1.0-step(0.25,abs(paintEnabled-4.0)),metal=1.0-step(0.25,abs(paintEnabled-5.0));vec3 N=normalize(paintNormal),V=normalize(-paintPosition),L=normalize(enhancedSunDirection),H=normalize(L+V);float ndl=max(dot(N,L),0.0),sp=0.055+0.32*car+0.055*chr-0.035*rough+0.41*metal,sh=12.0+26.0*car+10.0*chr-3.0*rough+36.0*metal,spec=step(0.0001,ndl)*pow(max(dot(N,H),0.0),sh)*sp,ft=1.0-clamp(dot(N,V),0.0,1.0),f=ft*ft*ft*ft*ft,refl=0.10*car+0.24*metal;return clamp(base*(0.92+0.16*ndl)+vec3(spec)+vec3(0.16,0.20,0.28)*f*refl,0.0,1.0);}\n"
         "void main() {\n"
-        "    gl_FragColor = cpri + csec;\n"
+        "    vec4 c = cpri + csec;\n"
+        "    c.rgb = applyPixelLighting(c.rgb);\n"
+        "    c.rgb = phongPaint(c.rgb);\n"
+        "    float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));\n"
+        "    vec3 graded=clamp(mix(vec3(l),c.rgb,1.25),0.0,1.0); c.rgb=graded*graded;\n"
+        "    c.rgb *= 1.0-0.58*csmShadow();\n"
+        "    c.rgb = applyVehicleRearLights(c.rgb);\n"
+        "    gl_FragColor = c;\n"
         "}\n"
     );
 
     GLuint textureShader = pglProgram::CompileShader(GL_FRAGMENT_SHADER,
-        "precision mediump float;\n"
+        "precision highp float;\n"
         "varying vec2 tc;\n"
         "varying vec4 cpri;\n"
         "varying vec4 csec;\n"
+        "varying vec3 paintNormal; varying vec3 paintPosition; varying float paintEnabled;\n"
+        "uniform struct LightParams { int enabled; vec4 position; vec4 colour; vec3 attenuation; } lights[" PDDI_STRINGIZE(PDDI_MAX_LIGHTS) "];\n"
+        "uniform vec4 acs; uniform vec4 acm; uniform vec4 dcm; uniform vec4 ecm; uniform vec4 scm; uniform float srm; uniform vec3 enhancedSunDirection;\n"
+        PGL_CSM_FRAGMENT
+        PGL_PIXEL_LIGHTING
+        "vec3 phongPaint(vec3 base){if(paintEnabled<0.5)return base;float car=1.0-step(0.25,abs(paintEnabled-2.0)),chr=1.0-step(0.25,abs(paintEnabled-3.0)),rough=1.0-step(0.25,abs(paintEnabled-4.0)),metal=1.0-step(0.25,abs(paintEnabled-5.0));vec3 N=normalize(paintNormal),V=normalize(-paintPosition),L=normalize(enhancedSunDirection),H=normalize(L+V);float ndl=max(dot(N,L),0.0),sp=0.055+0.32*car+0.055*chr-0.035*rough+0.41*metal,sh=12.0+26.0*car+10.0*chr-3.0*rough+36.0*metal,spec=step(0.0001,ndl)*pow(max(dot(N,H),0.0),sh)*sp,ft=1.0-clamp(dot(N,V),0.0,1.0),f=ft*ft*ft*ft*ft,refl=0.10*car+0.24*metal;return clamp(base*(0.92+0.16*ndl)+vec3(spec)+vec3(0.16,0.20,0.28)*f*refl,0.0,1.0);}\n"
 
         "uniform sampler2D tex;\n"
 
         "void main() {\n"
-        "    gl_FragColor = texture2D(tex, tc) * cpri + csec;\n"
+        "    vec4 c = texture2D(tex, tc) * cpri + csec;\n"
+        "    c.rgb = applyPixelLighting(c.rgb);\n"
+        "    c.rgb = phongPaint(c.rgb);\n"
+        "    float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));\n"
+        "    vec3 graded=clamp(mix(vec3(l),c.rgb,1.25),0.0,1.0); c.rgb=graded*graded;\n"
+        "    c.rgb *= 1.0-0.58*csmShadow();\n"
+        "    c.rgb = applyVehicleRearLights(c.rgb);\n"
+        "    gl_FragColor = c;\n"
         "}\n"
     );
 
     GLuint alphaTestShader = pglProgram::CompileShader(GL_FRAGMENT_SHADER,
-        "precision mediump float;\n"
+        "precision highp float;\n"
         "varying vec2 tc;\n"
         "varying vec4 cpri;\n"
         "varying vec4 csec;\n"
+        "varying vec3 paintNormal; varying vec3 paintPosition; varying float paintEnabled;\n"
+        "uniform struct LightParams { int enabled; vec4 position; vec4 colour; vec3 attenuation; } lights[" PDDI_STRINGIZE(PDDI_MAX_LIGHTS) "];\n"
+        "uniform vec4 acs; uniform vec4 acm; uniform vec4 dcm; uniform vec4 ecm; uniform vec4 scm; uniform float srm; uniform vec3 enhancedSunDirection;\n"
+        PGL_CSM_FRAGMENT
+        PGL_PIXEL_LIGHTING
+        "vec3 phongPaint(vec3 base){if(paintEnabled<0.5)return base;float car=1.0-step(0.25,abs(paintEnabled-2.0)),chr=1.0-step(0.25,abs(paintEnabled-3.0)),rough=1.0-step(0.25,abs(paintEnabled-4.0)),metal=1.0-step(0.25,abs(paintEnabled-5.0));vec3 N=normalize(paintNormal),V=normalize(-paintPosition),L=normalize(enhancedSunDirection),H=normalize(L+V);float ndl=max(dot(N,L),0.0),sp=0.055+0.32*car+0.055*chr-0.035*rough+0.41*metal,sh=12.0+26.0*car+10.0*chr-3.0*rough+36.0*metal,spec=step(0.0001,ndl)*pow(max(dot(N,H),0.0),sh)*sp,ft=1.0-clamp(dot(N,V),0.0,1.0),f=ft*ft*ft*ft*ft,refl=0.10*car+0.24*metal;return clamp(base*(0.92+0.16*ndl)+vec3(spec)+vec3(0.16,0.20,0.28)*f*refl,0.0,1.0);}\n"
 
         "uniform float alpharef;\n"
         "uniform sampler2D tex;\n"
@@ -303,9 +404,18 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
         "void main() {\n"
         "    vec4 c = texture2D(tex, tc) * cpri + csec;\n"
         "    if (c.a < alpharef) discard;\n"
+        "    c.rgb = applyPixelLighting(c.rgb);\n"
+        // Do not illuminate alpha-tested lamp billboards/decals: adding RGB to
+        // their low-alpha texels exposes the underlying rectangular polygons.
+        "    c.rgb = phongPaint(c.rgb);\n"
+        "    float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));\n"
+        "    vec3 graded=clamp(mix(vec3(l),c.rgb,1.25),0.0,1.0); c.rgb=graded*graded;\n"
+        "    c.rgb *= 1.0-0.58*csmShadow();\n"
         "    gl_FragColor = c;\n"
         "}\n"
     );
+#undef PGL_PIXEL_LIGHTING
+#undef PGL_CSM_FRAGMENT
 #endif
 
     colorProgram = pglProgram::CreateProgram(vertexShader, fragmentShader);
@@ -313,6 +423,29 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
     textureProgram = pglProgram::CreateProgram(vertexShader, textureShader);
 
     alphaTestProgram = pglProgram::CreateProgram(vertexShader, alphaTestShader);
+#if defined(RAD_ANDROID)
+    // Alpha-blended effects never receive CSM or enhanced-material lighting.
+    // Keeping their fragment stage free of those large dynamic branches is
+    // essential for smoke, whose overlapping sprites are fill-rate bound.
+    GLuint particleFS=pglProgram::CompileShader(GL_FRAGMENT_SHADER,
+        "precision mediump float; varying vec2 tc; varying vec4 cpri; varying vec4 csec; uniform sampler2D tex; void main(){vec4 c=texture2D(tex,tc)*cpri+csec;if(c.a<=0.003921569)discard;gl_FragColor=c;}");
+    particleTextureProgram=pglProgram::CreateProgram(vertexShader,particleFS);
+    glDeleteShader(particleFS);
+
+    GLuint shadowVS=pglProgram::CompileShader(GL_VERTEX_SHADER,
+        "precision highp float; attribute vec3 position; attribute vec2 texcoord; uniform mat4 projection; uniform mat4 modelview; uniform int vehicleDentCount; uniform vec4 vehicleDents[4]; varying vec2 tc; vec3 deform(vec3 p){for(int i=0;i<4;++i){if(i>=vehicleDentCount)break;vec4 d=vehicleDents[i];float r=1.20+d.w*0.65,f=max(0.0,1.0-length(p-d.xyz)/r);f=f*f*(3.0-2.0*f);p+=normalize(-d.xyz+vec3(0.0,0.20,0.0))*(d.w*f);}return p;} void main(){tc=texcoord;gl_Position=projection*modelview*vec4(deform(position),1.0);}");
+    GLuint shadowFS=pglProgram::CompileShader(GL_FRAGMENT_SHADER,
+        "precision highp float; uniform sampler2D tex; uniform float alpharef; varying vec2 tc; vec4 packDepth(float d){vec4 c=fract(d*vec4(1.0,255.0,65025.0,16581375.0));c-=c.yzww*vec4(1.0/255.0,1.0/255.0,1.0/255.0,0.0);return c;} void main(){if(alpharef>0.0&&texture2D(tex,tc).a<alpharef)discard;gl_FragColor=packDepth(gl_FragCoord.z);}");
+    shadowDepthProgram=pglProgram::CreateProgram(shadowVS,shadowFS);
+    glDeleteShader(shadowVS); glDeleteShader(shadowFS);
+
+    GLuint overlayVS=pglProgram::CompileShader(GL_VERTEX_SHADER,
+        "precision highp float; attribute vec3 position; attribute vec2 texcoord; uniform mat4 projection; uniform mat4 modelview; uniform mat4 shadowMatrix; uniform mat4 shadowMatrix1; uniform mat4 shadowMatrix2; uniform int vehicleDentCount; uniform vec4 vehicleDents[4]; varying vec4 sc0; varying vec4 sc1; varying vec4 sc2; varying float viewDistance; varying vec2 tc; vec3 deform(vec3 p){for(int i=0;i<4;++i){if(i>=vehicleDentCount)break;vec4 d=vehicleDents[i];float r=1.20+d.w*0.65,f=max(0.0,1.0-length(p-d.xyz)/r);f=f*f*(3.0-2.0*f);p+=normalize(-d.xyz+vec3(0.0,0.20,0.0))*(d.w*f);}return p;} void main(){vec4 v=modelview*vec4(deform(position),1.0);tc=texcoord;sc0=shadowMatrix*v;sc1=shadowMatrix1*v;sc2=shadowMatrix2*v;viewDistance=length(v.xyz);gl_Position=projection*v;}");
+    GLuint overlayFS=pglProgram::CompileShader(GL_FRAGMENT_SHADER,
+        "precision highp float; uniform sampler2D tex; uniform float alpharef; uniform sampler2D shadowTex; uniform sampler2D shadowTex1; uniform sampler2D shadowTex2; uniform float shadowTexelSize; uniform float shadowTexelSize1; uniform float shadowTexelSize2; varying vec4 sc0; varying vec4 sc1; varying vec4 sc2; varying float viewDistance; varying vec2 tc; float c0(vec2 u,float d){return d-0.00018>texture2D(shadowTex,u).r?1.0:0.0;} float c1(vec2 u,float d){return d-0.00018>texture2D(shadowTex1,u).r?1.0:0.0;} float c2(vec2 u,float d){return d-0.00018>texture2D(shadowTex2,u).r?1.0:0.0;} float s0(vec3 p){vec2 q=p.xy/shadowTexelSize-0.5,f=fract(q),b=(floor(q)+0.5)*shadowTexelSize;return mix(mix(c0(b,p.z),c0(b+vec2(shadowTexelSize,0.0),p.z),f.x),mix(c0(b+vec2(0.0,shadowTexelSize),p.z),c0(b+vec2(shadowTexelSize),p.z),f.x),f.y);} float s1(vec3 p){vec2 q=p.xy/shadowTexelSize1-0.5,f=fract(q),b=(floor(q)+0.5)*shadowTexelSize1;return mix(mix(c1(b,p.z),c1(b+vec2(shadowTexelSize1,0.0),p.z),f.x),mix(c1(b+vec2(0.0,shadowTexelSize1),p.z),c1(b+vec2(shadowTexelSize1),p.z),f.x),f.y);} float s2(vec3 p){vec2 q=p.xy/shadowTexelSize2-0.5,f=fract(q),b=(floor(q)+0.5)*shadowTexelSize2;return mix(mix(c2(b,p.z),c2(b+vec2(shadowTexelSize2,0.0),p.z),f.x),mix(c2(b+vec2(0.0,shadowTexelSize2),p.z),c2(b+vec2(shadowTexelSize2),p.z),f.x),f.y);} bool valid(vec3 p){return p.x>0.001&&p.x<0.999&&p.y>0.001&&p.y<0.999&&p.z>0.0&&p.z<1.0;} void main(){if(alpharef>0.0&&texture2D(tex,tc).a<alpharef)discard;float s=0.0;if(viewDistance<24.0){vec3 p0=sc0.xyz/sc0.w*0.5+0.5,p1=sc1.xyz/sc1.w*0.5+0.5;float a=valid(p0)?s0(p0):0.0,b=valid(p1)?s1(p1):0.0;s=viewDistance<20.0?max(a,b):mix(max(a,b),b,(viewDistance-20.0)*0.25);}else{vec3 p1=sc1.xyz/sc1.w*0.5+0.5;float b=valid(p1)?s1(p1):0.0;if(viewDistance<50.0)s=b;else{vec3 p2=sc2.xyz/sc2.w*0.5+0.5;float c=valid(p2)?s2(p2):0.0;s=viewDistance<56.0?mix(b,c,(viewDistance-50.0)/6.0):c;}}if(s<0.02)discard;gl_FragColor=vec4(0.0,0.0,0.0,0.58*s);}");
+    shadowOverlayProgram=pglProgram::CreateProgram(overlayVS,overlayFS);
+    glDeleteShader(overlayVS); glDeleteShader(overlayFS);
+#endif
 
     // Don't leak shaders
 #ifdef RAD_CG
@@ -334,6 +467,14 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
 
 pglContext::~pglContext()
 {
+#if defined(RAD_ANDROID)
+    glDeleteFramebuffers(SHADOW_CASCADE_COUNT,shadowFramebuffer);
+    glDeleteRenderbuffers(SHADOW_CASCADE_COUNT,shadowDepthBuffer);
+    glDeleteTextures(SHADOW_CASCADE_COUNT,shadowTexture);
+    if(shadowDepthProgram) shadowDepthProgram->Release();
+    if(shadowOverlayProgram) shadowOverlayProgram->Release();
+    if(particleTextureProgram) particleTextureProgram->Release();
+#endif
     defaultShader->Release();
     currentProgram->Release();
     colorProgram->Release();
@@ -352,6 +493,10 @@ pglContext::~pglContext()
 void pglContext::BeginFrame()
 {
     pddiBaseContext::BeginFrame();
+#if defined(RAD_ANDROID)
+    for(int i=0;i<SHADOW_CASCADE_COUNT;++i)
+        shadowRenderedThisFrame[i]=false;
+#endif
 
     SDL_GL_SetSwapInterval(display->GetForceVSync() ? 1 : 0);
 
@@ -397,6 +542,49 @@ void pglContext::Clear(unsigned bufferMask)
 
 void pglContext::SetupHardwareProjection(void)
 {
+#if defined(RAD_ANDROID)
+    int xrWidth = 0, xrHeight = 0;
+    // HudMap0 contains both regular Scrooby sprites and a Pure3D minimap with
+    // its own perspective camera. Only remap the 2D canvas; replacing the
+    // minimap camera projection puts all of its geometry outside clip space.
+    if (SharOpenXR::IsRadarRendering && SharOpenXR::IsRadarRendering() &&
+        (!SharOpenXR::IsEmbeddedHudRendering ||
+         !SharOpenXR::IsEmbeddedHudRendering()) &&
+        SharOpenXR::GetActiveRadarProjection &&
+        SharOpenXR::GetActiveRadarProjection(&projection,&xrWidth,&xrHeight))
+    {
+        glViewport(0,0,xrWidth,xrHeight);
+        if(currentProgram) currentProgram->SetProjectionMatrix(&projection);
+        return;
+    }
+    if (SharOpenXR::IsMovieRendering && SharOpenXR::IsMovieRendering() &&
+        SharOpenXR::GetActiveMovieProjection &&
+        SharOpenXR::GetActiveMovieProjection(&projection,&xrWidth,&xrHeight))
+    {
+        // Projection includes the fixed movie-plane pose, current eye view
+        // and the real asymmetric OpenXR FOV.
+        glViewport(0, 0, xrWidth, xrHeight);
+        if(currentProgram) currentProgram->SetProjectionMatrix(&projection);
+        return;
+    }
+    if (SharOpenXR::IsFrontendPlaneRendering &&
+        SharOpenXR::IsFrontendPlaneRendering() &&
+        SharOpenXR::GetActiveFrontendProjection &&
+        SharOpenXR::GetActiveFrontendProjection(&projection,&xrWidth,&xrHeight))
+    {
+        glViewport(0,0,xrWidth,xrHeight);
+        if(currentProgram) currentProgram->SetProjectionMatrix(&projection);
+        return;
+    }
+    if (state.viewState->projectionMode == PDDI_PROJECTION_PERSPECTIVE &&
+        SharOpenXR::GetActiveProjection &&
+        SharOpenXR::GetActiveProjection(&projection, &xrWidth, &xrHeight))
+    {
+        glViewport(0, 0, xrWidth, xrHeight);
+        if(currentProgram) currentProgram->SetProjectionMatrix(&projection);
+        return;
+    }
+#endif
     switch(state.viewState->projectionMode)
     {
         case PDDI_PROJECTION_DEVICE :
@@ -431,6 +619,85 @@ void pglContext::SetupHardwareProjection(void)
             break;
     }
 
+#if defined(RAD_ANDROID)
+    if (SharOpenXR::GetActiveViewport &&
+        SharOpenXR::GetActiveViewport(&xrWidth, &xrHeight))
+    {
+        if( SharOpenXR::IsRadarRendering && SharOpenXR::IsRadarRendering() &&
+            SharOpenXR::IsEmbeddedHudRendering &&
+            SharOpenXR::IsEmbeddedHudRendering() )
+        {
+            // Both the Pure3D viewport and the 2D radar projection now map the
+            // same authored Scrooby canvas directly into this target.
+            glViewport(
+                int(state.viewState->viewWindow.left*1440.0f),
+                int((1.0f-state.viewState->viewWindow.bottom)*1080.0f),
+                int((state.viewState->viewWindow.right-state.viewState->viewWindow.left)*1440.0f),
+                int((state.viewState->viewWindow.bottom-state.viewState->viewWindow.top)*1080.0f));
+        }
+        else if( SharOpenXR::IsMovieRendering && SharOpenXR::IsMovieRendering() )
+        {
+            glViewport(0,0,xrWidth,xrHeight);
+        }
+        else if( SharOpenXR::IsEmbeddedHudRendering &&
+            SharOpenXR::IsEmbeddedHudRendering() )
+        {
+            // A Pure3D HUD widget (the minimap) owns a sub-viewport. Convert
+            // that viewport through the same centred VR HUD transform instead
+            // of stretching its camera over the complete eye texture.
+            const float uiScale=0.40f;
+            const float uiVerticalOffset=-0.02f;
+            float uiOffset=0.0f;
+            SharOpenXR::GetActiveUiHorizontalOffset(&uiOffset);
+            float left=state.viewState->viewWindow.left*xrWidth;
+            float bottom=(1.0f-state.viewState->viewWindow.bottom)*xrHeight;
+            float width=(state.viewState->viewWindow.right-state.viewState->viewWindow.left)*xrWidth;
+            float height=(state.viewState->viewWindow.bottom-state.viewState->viewWindow.top)*xrHeight;
+            // A projection-space HUD translation moves the regular Scrooby
+            // frame farther than the equivalent sub-viewport translation.
+            // Convert the minimap's absolute viewport with the full NDC to
+            // pixel factor so that it stays registered with that frame.
+            left=xrWidth*0.5f+(left-xrWidth*0.5f)*uiScale+uiOffset*xrWidth;
+            bottom=xrHeight*0.5f+(bottom-xrHeight*0.5f)*uiScale+uiVerticalOffset*xrHeight*0.5f;
+            glViewport(static_cast<int>(left),static_cast<int>(bottom),
+                       static_cast<int>(width*uiScale),static_cast<int>(height*uiScale));
+        }
+        else
+        {
+            glViewport(0, 0, xrWidth, xrHeight);
+        }
+    }
+
+    // OpenXR eye FOVs are asymmetric. Move head-locked 2D layers to the
+    // optical centre of each eye so menus converge instead of separating.
+    float uiOffset = 0.0f;
+    if ((!SharOpenXR::IsMovieRendering || !SharOpenXR::IsMovieRendering()) &&
+        (!SharOpenXR::IsEmbeddedHudRendering ||
+         !SharOpenXR::IsEmbeddedHudRendering()) &&
+        SharOpenXR::GetActiveUiHorizontalOffset &&
+        SharOpenXR::GetActiveUiHorizontalOffset(&uiOffset))
+    {
+        // Keep the legacy 16:9 HUD inside Quest's comfortable central field.
+        // Scaling clip-space X/Y around zero preserves the original layout.
+        const float uiScale = 0.40f;
+        if( SharOpenXR::HasEnhancedUiConvergence &&
+            SharOpenXR::HasEnhancedUiConvergence() )
+        {
+            uiOffset*=2.0f;
+        }
+        for(int row=0;row<4;++row)
+        {
+            projection.m[row][0]*=uiScale;
+            projection.m[row][1]*=uiScale;
+        }
+        projection.m[3][0] += uiOffset;
+        // Lower the complete head-locked canvas into the comfortable view.
+        // Keep this as one projection-space conversion so individual HUD
+        // widgets (map, mission marker, menus) retain their relative layout.
+        projection.m[3][1] -= 0.02f;
+    }
+#endif
+
     if(currentProgram)
         currentProgram->SetProjectionMatrix(&projection);
 }
@@ -455,6 +722,52 @@ void pglContext::LoadHardwareMatrix(pddiMatrixType id)
 void pglContext::SetScissor(pddiRect* rect)
 {
     pddiBaseContext::SetScissor(rect);
+#if defined(RAD_ANDROID)
+    if(SharOpenXR::IsFrontendPlaneRendering &&
+       SharOpenXR::IsFrontendPlaneRendering())
+    {
+        glDisable(GL_SCISSOR_TEST);
+        return;
+    }
+    rmt::Matrix ignoredProjection;
+    int xrWidth = 0, xrHeight = 0;
+    if (SharOpenXR::GetActiveViewport &&
+        SharOpenXR::GetActiveViewport(&xrWidth, &xrHeight))
+    {
+        if(!rect)
+        {
+            glDisable(GL_SCISSOR_TEST);
+            return;
+        }
+        const float scaleX=static_cast<float>(xrWidth)/display->GetWidth();
+        const float scaleY=static_cast<float>(xrHeight)/display->GetHeight();
+        float left=rect->left*scaleX;
+        float bottom=(display->GetHeight()-rect->bottom)*scaleY;
+        float width=(rect->right-rect->left)*scaleX;
+        float height=(rect->bottom-rect->top)*scaleY;
+
+        // The GUI projection is scaled and translated around the eye centre.
+        // Its clipping rectangle must undergo the identical transform or a
+        // Pure3D HUD widget (notably the map) is clipped above/right of frame.
+        float uiOffset=0.0f;
+        if( SharOpenXR::GetActiveUiHorizontalOffset &&
+            SharOpenXR::GetActiveUiHorizontalOffset(&uiOffset) )
+        {
+            const float uiScale=0.40f;
+            const float uiVerticalOffset=-0.02f;
+            // Match the embedded minimap viewport conversion above.  The
+            // clip must move by exactly the same amount as the map content.
+            left=xrWidth*0.5f+(left-xrWidth*0.5f)*uiScale+uiOffset*xrWidth;
+            bottom=xrHeight*0.5f+(bottom-xrHeight*0.5f)*uiScale+uiVerticalOffset*xrHeight*0.5f;
+            width*=uiScale;
+            height*=uiScale;
+        }
+        glScissor(static_cast<int>(left),static_cast<int>(bottom),
+                  static_cast<int>(width),static_cast<int>(height));
+        glEnable(GL_SCISSOR_TEST);
+        return;
+    }
+#endif
     if(!rect)
     {
         glDisable(GL_SCISSOR_TEST);
@@ -609,6 +922,9 @@ void pglContext::EndPrims(pddiPrimStream* stream)
         glVertexAttrib4f( 3, 1.0f, 1.0f, 1.0f, 1.0f );
     }
 
+#if defined(RAD_ANDROID)
+    if(SharOpenXR::PrepareRadarDraw) SharOpenXR::PrepareRadarDraw();
+#endif
     glDrawArrays( glstream->primitive, 0, glstream->coords.size() );
 
     glstream->coords.clear();
@@ -951,10 +1267,16 @@ void pglPrimBuffer::Display(void)
 
     if(indexCount && indices)
     {
+#if defined(RAD_ANDROID)
+        if(SharOpenXR::PrepareRadarDraw) SharOpenXR::PrepareRadarDraw();
+#endif
         glDrawElements(primTypeTable[primType],indexCount,GL_UNSIGNED_SHORT,0);
     }
     else
     {
+#if defined(RAD_ANDROID)
+        if(SharOpenXR::PrepareRadarDraw) SharOpenXR::PrepareRadarDraw();
+#endif
         glDrawArrays(primTypeTable[primType], 0, total);
     }
 }
@@ -980,6 +1302,41 @@ void pglContext::DrawPrimBuffer(pddiShader* mat, pddiPrimBuffer* buffer)
     pddiBaseShader* material = (pddiBaseShader*)mat;
     ADD_STAT(PDDI_STAT_MATERIAL_OPS, !material->IsCurrent());
     material->SetMaterial();
+#if defined(RAD_ANDROID)
+    // Some level-specific materials restore their normal GLES program/state
+    // from SetMaterial. During a CSM caster replay that can leak packed depth
+    // geometry into the eye target as long coloured strips. The shadow pass
+    // owns the target and state at the actual submission boundary.
+    if(shadowPass)
+    {
+        glBindFramebuffer(GL_FRAMEBUFFER,shadowFramebuffer[shadowCurrentCascade]);
+        glViewport(0,0,shadowCurrentCascade<2?2048:1024,
+                         shadowCurrentCascade<2?2048:1024);
+        SetShaderProgram(shadowDepthProgram);
+        shadowDepthProgram->UseProgram();
+        shadowDepthProgram->SetProjectionMatrix(&projection);
+        glDisable(GL_BLEND);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glDepthMask(GL_TRUE);
+        glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);
+    }
+    // Legacy materials configure their opaque blend state in SetMaterial().
+    // The CSM overlay must win after that state change, immediately before the
+    // primitive is submitted, otherwise its alpha is written as solid black.
+    else if(shadowOverlayPass)
+    {
+        SetShaderProgram(shadowOverlayProgram);
+        static const float texelSizes[SHADOW_CASCADE_COUNT]={1.0f/2048.0f,1.0f/2048.0f,1.0f/1024.0f};
+        currentProgram->SetCascadeShadowState(true,shadowTexture,
+                                              shadowReceiverMatrix,texelSizes);
+        glEnable(GL_BLEND);
+        glBlendEquation(GL_FUNC_ADD);
+        glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);
+        glDepthFunc(GL_LEQUAL);
+    }
+#endif
     ((pglPrimBuffer*)buffer)->Display();
 }
 
@@ -1197,17 +1554,35 @@ float pglContext::EndTiming(void)
 void pglContext::SetShaderProgram(pglProgram* program)
 {
     if(program == currentProgram)
+    {
+        // The same logical Pure3D material has two native programs on
+        // Android: legacy and multiview. Crossing an offscreen/main target
+        // boundary can therefore change the native program even though this
+        // pointer is unchanged. Re-submit every context-owned uniform below.
+        if(!currentProgram) return;
+#if defined(RAD_ANDROID) && !defined(RAD_CG)
+        // The old renderer returned immediately for an unchanged material.
+        // Preserve that hot-path behaviour unless an offscreen pass changed
+        // which native (legacy/multiview) program this logical shader needs.
+        if(currentProgram->IsRequestedProgramActive()) return;
+#else
         return;
-
-    if(currentProgram)
-        currentProgram->Release();
-    currentProgram = program;
-    if(!currentProgram)
-        return;
-
-    currentProgram->AddRef();
+#endif
+    }
+    else
+    {
+        if(currentProgram) currentProgram->Release();
+        currentProgram = program;
+        if(!currentProgram) return;
+        currentProgram->AddRef();
+    }
     currentProgram->UseProgram();
     currentProgram->SetProjectionMatrix(&projection);
+#if defined(RAD_ANDROID)
+    static const float texelSizes[SHADOW_CASCADE_COUNT]={1.0f/2048.0f,1.0f/2048.0f,1.0f/1024.0f};
+    currentProgram->SetCascadeShadowState(shadowReady[0] && shadowReady[1] && shadowReady[2] && shadowReceiverEnabled && !shadowPass,
+                                           shadowTexture,shadowReceiverMatrix,texelSizes);
+#endif
 
     LoadHardwareMatrix(PDDI_MATRIX_MODELVIEW);
     if(currentProgram->SupportsLighting())
@@ -1220,9 +1595,391 @@ void pglContext::SetShaderProgram(pglProgram* program)
 
 void pglContext::SetTextureEnvironment(const pglTextureEnv* texEnv)
 {
+#if defined(RAD_ANDROID)
+    if(shadowPass)
+    {
+        SetShaderProgram(shadowDepthProgram);
+        currentProgram->SetTextureEnvironment(texEnv);
+        return;
+    }
+#endif
+#if defined(RAD_ANDROID)
+    if(shadowOverlayPass)
+    {
+        SetShaderProgram(shadowOverlayProgram);
+        static const float texelSizes[SHADOW_CASCADE_COUNT]={1.0f/2048.0f,1.0f/2048.0f,1.0f/1024.0f};
+        currentProgram->SetCascadeShadowState(true,shadowTexture,
+                                              shadowReceiverMatrix,texelSizes);
+        currentProgram->SetTextureEnvironment(texEnv);
+        // Materials may have restored their own opaque state immediately
+        // before SetDevPass, so enforce the overlay state for every draw.
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);
+        glDepthFunc(GL_LEQUAL);
+        return;
+    }
+#endif
     if(texEnv->texture)
-        SetShaderProgram(texEnv->alphaTest ? alphaTestProgram : textureProgram);
+        SetShaderProgram(pglIsParticleRendering() && !texEnv->alphaTest ?
+                         particleTextureProgram :
+                         (texEnv->alphaTest?alphaTestProgram:textureProgram));
     else
         SetShaderProgram(colorProgram);
     currentProgram->SetTextureEnvironment(texEnv);
 }
+
+#if defined(RAD_ANDROID)
+bool pglContext::BeginSunShadowMap(int cascadeIndex,const pddiMatrix& eyeCameraToWorld,
+                                  pddiMatrix* lightWorldToCamera,
+                                  pddiMatrix* lightCameraToWorld)
+{
+    if(cascadeIndex<0 || cascadeIndex>=SHADOW_CASCADE_COUNT) return false;
+    static const int cascadeSizes[SHADOW_CASCADE_COUNT]={2048,2048,1024};
+    static const float cascadeHalfWidths[SHADOW_CASCADE_COUNT]={24.0f,56.0f,224.0f};
+    const int shadowSize=cascadeSizes[cascadeIndex];
+    const float halfWidth=cascadeHalfWidths[cascadeIndex];
+    // The right eye reuses the map, but needs its own eye-space to light-space
+    // conversion because modelview vertices are already in eye space.
+    if(shadowRenderedThisFrame[cascadeIndex])
+    {
+        shadowReceiverMatrix[cascadeIndex].Mult(eyeCameraToWorld,shadowWorldToClip[cascadeIndex]);
+        if(currentProgram)
+        {
+            static const float texelSizes[SHADOW_CASCADE_COUNT]={1.0f/2048.0f,1.0f/2048.0f,1.0f/1024.0f};
+            currentProgram->SetCascadeShadowState(shadowReady[0] && shadowReady[1] && shadowReady[2] && shadowReceiverEnabled,
+                                                   shadowTexture,shadowReceiverMatrix,texelSizes);
+        }
+        return false;
+    }
+
+    pddiLight* sun=NULL;
+    for(int i=0;i<PDDI_MAX_LIGHTS;i++)
+    {
+        if(state.lightingState->light[i].enabled &&
+           state.lightingState->light[i].type==PDDI_LIGHT_DIRECTIONAL)
+        {
+            sun=&state.lightingState->light[i];
+            break;
+        }
+    }
+    // The level's "sun" tLight is not consistently installed in the PDDI
+    // light slots by the time this extra pass runs. CSM still needs a stable
+    // world-space direction, so use a fixed Springfield daylight direction
+    // when the legacy renderer exposes no directional light.
+    static bool loggedFallbackSun=false;
+    if(!sun && !loggedFallbackSun)
+    {
+        SDL_Log("VR CSM: no active PDDI directional light; using fixed sun direction");
+        loggedFallbackSun=true;
+    }
+
+    // Save the OpenXR eye target and all state touched by the offscreen pass
+    // before creating/binding any CSM resource. In particular, never restore
+    // framebuffer 0: standalone OpenXR renders into its own framebuffer.
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING,&shadowSavedFramebuffer);
+    glGetIntegerv(GL_RENDERBUFFER_BINDING,&shadowSavedRenderbuffer);
+    glGetIntegerv(GL_ACTIVE_TEXTURE,&shadowSavedActiveTexture);
+    glGetIntegerv(GL_VIEWPORT,shadowSavedViewport);
+    glGetFloatv(GL_COLOR_CLEAR_VALUE,shadowSavedClearColour);
+    shadowSavedScissor=glIsEnabled(GL_SCISSOR_TEST);
+    shadowSavedDepthTest=glIsEnabled(GL_DEPTH_TEST);
+    glGetBooleanv(GL_DEPTH_WRITEMASK,&shadowSavedDepthMask);
+    glGetBooleanv(GL_COLOR_WRITEMASK,shadowSavedColourMask);
+    glGetIntegerv(GL_DEPTH_FUNC,&shadowSavedDepthFunc);
+    glGetFloatv(GL_DEPTH_CLEAR_VALUE,&shadowSavedClearDepth);
+    shadowSavedCull=glIsEnabled(GL_CULL_FACE);
+    glGetIntegerv(GL_CULL_FACE_MODE,&shadowSavedCullFace);
+    shadowSavedPolygonOffset=glIsEnabled(GL_POLYGON_OFFSET_FILL);
+    glGetFloatv(GL_POLYGON_OFFSET_FACTOR,&shadowSavedPolygonFactor);
+    glGetFloatv(GL_POLYGON_OFFSET_UNITS,&shadowSavedPolygonUnits);
+    shadowSavedProjection=projection;
+
+    if(!shadowFramebuffer[cascadeIndex])
+    {
+        glGenTextures(1,&shadowTexture[cascadeIndex]);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D,shadowTexture[cascadeIndex]);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_DEPTH_COMPONENT24,shadowSize,shadowSize,0,
+                     GL_DEPTH_COMPONENT,GL_UNSIGNED_INT,NULL);
+        // A regular depth sampler is compared manually in the overlay shader.
+        // Keep it nearest: linear filtering of this native depth format produced
+        // invalid interpolation on the Quest driver and shadowed every receiver.
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_COMPARE_MODE,GL_NONE);
+        glActiveTexture(GL_TEXTURE0);
+        glGenFramebuffers(1,&shadowFramebuffer[cascadeIndex]);
+        glBindFramebuffer(GL_FRAMEBUFFER,shadowFramebuffer[cascadeIndex]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,
+                               GL_TEXTURE_2D,shadowTexture[cascadeIndex],0);
+        GLenum staleError=GL_NO_ERROR;
+        while((staleError=glGetError())!=GL_NO_ERROR) {}
+        const GLenum attachStatus=glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        const GLenum attachError=glGetError();
+        // Quest exposes GLES 3.2: use a genuine depth-only target to avoid the
+        // bandwidth and storage of a discarded RGB565 colour attachment.
+        // Retain the old attachment as a runtime fallback for other drivers.
+        bool depthOnly=false;
+        GLenum drawStatus=attachStatus,drawError=GL_NO_ERROR;
+        GLenum readStatus=attachStatus,readError=GL_NO_ERROR;
+        if(glDrawBuffers && glReadBuffer)
+        {
+            const GLenum noColour=GL_NONE;
+            glDrawBuffers(1,&noColour);
+            drawError=glGetError();
+            drawStatus=glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            glReadBuffer(GL_NONE);
+            readError=glGetError();
+            readStatus=glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            depthOnly=readStatus==GL_FRAMEBUFFER_COMPLETE &&
+                      drawError==GL_NO_ERROR && readError==GL_NO_ERROR;
+        }
+        SDL_Log("VR CSM depth-only probe c%d: attach=0x%x/e0x%x draw=0x%x/e0x%x read=0x%x/e0x%x funcs=%d",
+                cascadeIndex,(unsigned)attachStatus,(unsigned)attachError,
+                (unsigned)drawStatus,(unsigned)drawError,
+                (unsigned)readStatus,(unsigned)readError,
+                (glDrawBuffers&&glReadBuffer)?1:0);
+        if(!depthOnly)
+        {
+            glGenRenderbuffers(1,&shadowDepthBuffer[cascadeIndex]);
+            glBindRenderbuffer(GL_RENDERBUFFER,shadowDepthBuffer[cascadeIndex]);
+            glRenderbufferStorage(GL_RENDERBUFFER,GL_RGB565,shadowSize,shadowSize);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,
+                                      GL_RENDERBUFFER,shadowDepthBuffer[cascadeIndex]);
+            if(glDrawBuffers)
+            {
+                const GLenum colourAttachment=GL_COLOR_ATTACHMENT0;
+                glDrawBuffers(1,&colourAttachment);
+            }
+        }
+        shadowReady[cascadeIndex]=glCheckFramebufferStatus(GL_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE;
+        glBindFramebuffer(GL_FRAMEBUFFER,shadowSavedFramebuffer);
+        glBindRenderbuffer(GL_RENDERBUFFER,shadowSavedRenderbuffer);
+        glActiveTexture(shadowSavedActiveTexture);
+        SDL_Log("VR CSM: cascade %d framebuffer %s (%dx%d, %s, manual bilinear PCF)",
+                cascadeIndex,shadowReady[cascadeIndex]?"ready":"FAILED",shadowSize,shadowSize,
+                depthOnly?"depth-only":"RGB565 fallback");
+        if(!shadowReady[cascadeIndex]) return false;
+    }
+
+    rmt::Vector direction;
+    if(sun)
+    {
+        direction.Set(sun->worldDirection.x,sun->worldDirection.y,
+                      sun->worldDirection.z);
+    }
+    else
+    {
+        direction.Set(-0.45f,-1.0f,0.30f);
+    }
+    direction.Normalize();
+    // Use the midpoint of the two OpenXR eyes. An individual eye origin moves
+    // around the head as it rotates, which makes a world-locked cascade orbit
+    // with the headset and produces two slightly different moving shadows.
+    rmt::Matrix centreCamera=eyeCameraToWorld;
+    SharOpenXR::GetLatestCullingCamera(&centreCamera);
+    rmt::Vector requestedCentre=centreCamera.Row(3);
+    if(!shadowStableCentreValid)
+    {
+        shadowStableCentre=requestedCentre;
+        shadowStableCentreValid=true;
+    }
+    else
+    {
+        rmt::Vector delta=requestedCentre-shadowStableCentre;
+        // HMD motion and eye offsets must not translate the cascade. Move it
+        // only when the player has genuinely travelled through the level.
+        if(delta.x*delta.x+delta.z*delta.z>16.0f || fabsf(delta.y)>2.0f)
+            shadowStableCentre=requestedCentre;
+    }
+    rmt::Vector centre=shadowStableCentre;
+    // Never derive the cascade origin from eye orientation: doing that makes
+    // every world shadow swim when the user turns their head. Snap translation
+    // to one shadow texel as a first-order temporal stabilization.
+    const float worldTexel=(halfWidth*2.0f)/(float)shadowSize;
+    centre.x=floorf(centre.x/worldTexel+0.5f)*worldTexel;
+    centre.y=floorf(centre.y/worldTexel+0.5f)*worldTexel;
+    centre.z=floorf(centre.z/worldTexel+0.5f)*worldTexel;
+
+    // Mid/far cascades contain static geometry only. Keep their maps until
+    // the stabilized cascade origin moves instead of replaying thousands of
+    // legacy draw calls at 90 Hz. The near map remains dynamic every frame.
+    if(cascadeIndex>0 && shadowReady[cascadeIndex] &&
+       shadowCascadeCentreValid[cascadeIndex])
+    {
+        const rmt::Vector centreDelta=centre-shadowCascadeCentre[cascadeIndex];
+        if(centreDelta.MagnitudeSqr()<0.000001f)
+        {
+            shadowRenderedThisFrame[cascadeIndex]=true;
+            shadowReceiverMatrix[cascadeIndex].Mult(
+                eyeCameraToWorld,shadowWorldToClip[cascadeIndex]);
+            return false;
+        }
+    }
+    shadowCascadeCentre[cascadeIndex]=centre;
+    shadowCascadeCentreValid[cascadeIndex]=true;
+
+    lightCameraToWorld->Identity();
+    lightCameraToWorld->FillHeading(direction,rmt::Vector(0.0f,1.0f,0.0f));
+    // A symmetric light-space depth interval is robust against differences
+    // in the legacy camera-forward convention. The light's origin can stay
+    // at the cascade centre; objects above the ground then have lower depth
+    // than their receivers along the downward light direction.
+    lightCameraToWorld->FillTranslate(centre);
+    lightWorldToCamera->InvertOrtho(*lightCameraToWorld);
+
+    pddiMatrix lightProjection;
+    // radmath SetOrthographic only fills scale and translation components;
+    // unlike a typical matrix builder it does not initialize the remaining
+    // cells. Without Identity() the clip matrix contains stack garbage and
+    // every caster can be clipped before rasterization.
+    lightProjection.Identity();
+    lightProjection.SetOrthographic(-halfWidth,halfWidth,-halfWidth,halfWidth,-155.0f,155.0f);
+    shadowWorldToClip[cascadeIndex].Mult(*lightWorldToCamera,lightProjection);
+
+    // CSM is a mono offscreen pass even while the world target is multiview.
+    // Disable multiview only after all cached-map early exits; EndSunShadowMap
+    // restores it after the actual depth pass.
+    SharOpenXR::SetMultiviewTargetActive(false);
+    glBindFramebuffer(GL_FRAMEBUFFER,shadowFramebuffer[cascadeIndex]);
+    glViewport(0,0,shadowSize,shadowSize);
+    glDisable(GL_SCISSOR_TEST);
+    glClearDepthf(1.0f);
+    glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);
+    glClear(GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_FRONT);
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(2.0f,4.0f);
+    projection=lightProjection;
+    shadowPass=true;
+    shadowCurrentCascade=cascadeIndex;
+    gPglCsmBillboardMode=1;
+    shadowRenderedThisFrame[cascadeIndex]=true;
+    SetShaderProgram(shadowDepthProgram);
+    // CSM crosses from the eye framebuffer to a private depth framebuffer.
+    // The logical program cache can still name shadowDepthProgram from an
+    // earlier cascade/eye even when a raw GLES utility draw changed the actual
+    // binding. This boundary must always establish the depth program.
+    shadowDepthProgram->UseProgram();
+    shadowDepthProgram->SetProjectionMatrix(&projection);
+    return true;
+}
+
+void pglContext::EndSunShadowMap(int cascadeIndex,const pddiMatrix& eyeCameraToWorld)
+{
+    shadowPass=false;
+    gPglCsmBillboardMode=0;
+    glBindFramebuffer(GL_FRAMEBUFFER,shadowSavedFramebuffer);
+    SharOpenXR::SetMultiviewTargetActive(true);
+    glBindRenderbuffer(GL_RENDERBUFFER,shadowSavedRenderbuffer);
+    glViewport(shadowSavedViewport[0],shadowSavedViewport[1],
+               shadowSavedViewport[2],shadowSavedViewport[3]);
+    glClearColor(shadowSavedClearColour[0],shadowSavedClearColour[1],
+                 shadowSavedClearColour[2],shadowSavedClearColour[3]);
+    if(shadowSavedScissor) glEnable(GL_SCISSOR_TEST);
+    else glDisable(GL_SCISSOR_TEST);
+    if(shadowSavedDepthTest) glEnable(GL_DEPTH_TEST);
+    else glDisable(GL_DEPTH_TEST);
+    glDepthFunc(shadowSavedDepthFunc);
+    glDepthMask(shadowSavedDepthMask);
+    glColorMask(shadowSavedColourMask[0],shadowSavedColourMask[1],
+                shadowSavedColourMask[2],shadowSavedColourMask[3]);
+    glClearDepthf(shadowSavedClearDepth);
+    if(shadowSavedCull) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+    glCullFace(shadowSavedCullFace);
+    if(shadowSavedPolygonOffset) glEnable(GL_POLYGON_OFFSET_FILL);
+    else glDisable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(shadowSavedPolygonFactor,shadowSavedPolygonUnits);
+    glActiveTexture(shadowSavedActiveTexture);
+    projection=shadowSavedProjection;
+    shadowReceiverMatrix[cascadeIndex].Mult(eyeCameraToWorld,shadowWorldToClip[cascadeIndex]);
+    // Force a normal program now; otherwise the cached depth-only program can
+    // survive until a material happens to change its texture state.
+    SetShaderProgram(colorProgram);
+    colorProgram->UseProgram();
+    colorProgram->SetProjectionMatrix(&projection);
+    static const float texelSizes[SHADOW_CASCADE_COUNT]={1.0f/2048.0f,1.0f/2048.0f,1.0f/1024.0f};
+    colorProgram->SetCascadeShadowState(shadowReady[0] && shadowReady[1] && shadowReady[2] && shadowReceiverEnabled,
+                                        shadowTexture,shadowReceiverMatrix,texelSizes);
+}
+
+void pglContext::EnableSunShadowReceivers(bool enable)
+{
+    shadowReceiverEnabled=enable;
+    if(currentProgram && !shadowPass)
+    {
+        static const float texelSizes[SHADOW_CASCADE_COUNT]={1.0f/2048.0f,1.0f/2048.0f,1.0f/1024.0f};
+        currentProgram->SetCascadeShadowState(shadowReady[0] && shadowReady[1] && shadowReady[2] && enable,
+                                               shadowTexture,shadowReceiverMatrix,texelSizes);
+    }
+}
+
+void pglContext::BeginSunShadowOverlay()
+{
+    if(!shadowReady[0] || !shadowReady[1] || !shadowReady[2]) return;
+    shadowOverlayPass=true;
+    gPglCsmBillboardMode=2;
+    shadowOverlaySavedBlend=glIsEnabled(GL_BLEND);
+    glGetBooleanv(GL_DEPTH_WRITEMASK,&shadowOverlaySavedDepthMask);
+    glGetIntegerv(GL_BLEND_SRC_RGB,&shadowOverlaySavedBlendSrc);
+    glGetIntegerv(GL_BLEND_DST_RGB,&shadowOverlaySavedBlendDst);
+    glGetIntegerv(GL_DEPTH_FUNC,&shadowOverlaySavedDepthFunc);
+    SetShaderProgram(shadowOverlayProgram);
+    shadowOverlayProgram->UseProgram();
+    shadowOverlayProgram->SetProjectionMatrix(&projection);
+}
+
+void pglContext::EndSunShadowOverlay()
+{
+    if(!shadowOverlayPass) return;
+    shadowOverlayPass=false;
+    gPglCsmBillboardMode=0;
+    if(shadowOverlaySavedBlend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+    glBlendFunc(shadowOverlaySavedBlendSrc,shadowOverlaySavedBlendDst);
+    glDepthMask(shadowOverlaySavedDepthMask);
+    glDepthFunc(shadowOverlaySavedDepthFunc);
+    SetShaderProgram(colorProgram);
+    colorProgram->UseProgram();
+    colorProgram->SetProjectionMatrix(&projection);
+}
+
+bool VrBeginSunShadowMap(pddiRenderContext* context,
+                         int cascadeIndex,
+                         const pddiMatrix& eyeCameraToWorld,
+                         pddiMatrix* lightWorldToCamera,
+                         pddiMatrix* lightCameraToWorld)
+{
+    return static_cast<pglContext*>(context)->BeginSunShadowMap(
+        cascadeIndex,eyeCameraToWorld,lightWorldToCamera,lightCameraToWorld);
+}
+
+void VrEndSunShadowMap(pddiRenderContext* context,
+                       int cascadeIndex,
+                       const pddiMatrix& eyeCameraToWorld)
+{
+    static_cast<pglContext*>(context)->EndSunShadowMap(cascadeIndex,eyeCameraToWorld);
+}
+
+
+void VrEnableSunShadowReceivers(pddiRenderContext* context,bool enable)
+{
+    static_cast<pglContext*>(context)->EnableSunShadowReceivers(enable);
+}
+
+void VrBeginSunShadowOverlay(pddiRenderContext* context)
+{
+    static_cast<pglContext*>(context)->BeginSunShadowOverlay();
+}
+
+void VrEndSunShadowOverlay(pddiRenderContext* context)
+{
+    static_cast<pglContext*>(context)->EndSunShadowOverlay();
+}
+#endif

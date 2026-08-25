@@ -30,6 +30,9 @@
 // Pure3D
 #include <p3d/utility.hpp>
 #include <p3d/sprite.hpp>
+#ifdef RAD_ANDROID
+#include <vr/openxrmanager.h>
+#endif
 
 //===========================================================================
 // Global Data, Local Data, Local Classes
@@ -65,7 +68,10 @@ HudMissionObjective::HudMissionObjective( Scrooby::Page* pPage )
 
         m_missionIcon->ResetTransformation();
         m_missionIcon->ScaleAboutCenter( MISSION_ICON_SCALE );
-        m_missionIcon->Translate( 0, HUD_ICON_SLIDE_DISTANCE );
+#ifdef RAD_ANDROID
+        if( !SharOpenXR::IsSpatialHudEnabled() )
+#endif
+            m_missionIcon->Translate( 0, HUD_ICON_SLIDE_DISTANCE );
 
         m_currentSubState = STATE_IDLE;
     }
@@ -90,6 +96,18 @@ HudMissionObjective::Start()
     bool isIconFound = this->UpdateIcon();
     if( isIconFound )
     {
+#ifdef RAD_ANDROID
+        if( SharOpenXR::IsSpatialHudEnabled() )
+        {
+            m_iconTranslator.Deactivate();
+            m_missionIcon->ResetTransformation();
+            m_missionIcon->ScaleAboutCenter( MISSION_ICON_SCALE );
+            CGuiScreenHud* currentHud = GetCurrentHud();
+            if( currentHud != NULL ) currentHud->DisplayMessage( true, m_messageID );
+            m_currentSubState = STATE_IDLE;
+            return;
+        }
+#endif
         m_iconTranslator.Reset();
         m_iconTranslator.Activate();
     }

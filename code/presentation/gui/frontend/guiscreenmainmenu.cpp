@@ -49,6 +49,9 @@
 #include <Layer.h>
 #include <Page.h>
 #include <Pure3dObject.h>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 #include <Screen.h>
 #include <Text.h>
 
@@ -316,6 +319,9 @@ MEMTRACK_PUSH_GROUP( "CGUIScreenMainMenu" );
 	pPage = m_pScroobyScreen->GetPage( "TVFrame" );
 	rAssert( pPage );
     m_tvFrame = pPage->GetLayer( "TVFrame" );
+#if defined(RAD_ANDROID)
+    if(m_tvFrame) m_tvFrame->SetVisible(false);
+#endif
 
     // correct TV frame proportion and size on GC and PS2 and pc
     //
@@ -495,6 +501,9 @@ void CGuiScreenMainMenu::HandleMessage
             case GUI_MSG_CONTROLLER_L1:
             case GUI_MSG_CONTROLLER_R1:
             {
+#if defined(RAD_ANDROID)
+                if(!SharOpenXR::IsDeveloperMenusEnabled()) break;
+#endif
                 this->ToggleLevelMenu();
 
                 break;
@@ -1427,6 +1436,9 @@ CGuiScreenIntroTransition::CGuiScreenIntroTransition
     pPage = m_pScroobyScreen->GetPage( "TVFrame" );
     rAssert( pPage );
     m_tvFrame = pPage->GetLayer( "TVFrame" );
+#if defined(RAD_ANDROID)
+    if(m_tvFrame) m_tvFrame->SetVisible(false);
+#endif
 
     // 3D FE Gags
     //

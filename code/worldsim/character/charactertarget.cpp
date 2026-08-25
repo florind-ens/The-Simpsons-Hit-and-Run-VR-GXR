@@ -240,6 +240,17 @@ void CharacterTarget::GetFirstPersonPosition( rmt::Vector* position )
     position->Set( 0.0f, pos.y, 0.0f );
 }
 
+void CharacterTarget::GetHeadWorldPosition( rmt::Vector* position ) const
+{
+    poser::Pose* pose = mpCharacter->GetPuppet()->GetPose();
+    *position = pose->GetJoint(17)->GetWorldMatrix().Row(3);
+}
+
+void CharacterTarget::GetHeadWorldTransform( rmt::Matrix* transform ) const
+{
+    poser::Pose* pose=mpCharacter->GetPuppet()->GetPose();
+    *transform=pose->GetJoint(17)->GetWorldMatrix();
+}
 
 /*
 ==============================================================================

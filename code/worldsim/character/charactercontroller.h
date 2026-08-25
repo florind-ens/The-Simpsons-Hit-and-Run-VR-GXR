@@ -80,6 +80,7 @@ public:
     }
 
     void SetActive( bool active ) { mActive = active; }
+    bool IsActive( void ) const { return mActive; }
 
 protected:
     Character* mpCharacter;

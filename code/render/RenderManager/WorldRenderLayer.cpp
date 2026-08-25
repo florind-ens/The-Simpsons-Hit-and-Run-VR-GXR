@@ -35,6 +35,7 @@
 #include <worldsim/character/character.h>
 #include <worldsim/vehiclecentral.h>
 #include <worldsim/redbrick/vehicle.h>
+#include <worldsim/redbrick/geometryvehicle.h>
 #include <worldsim/coins/coinmanager.h>
 #include <worldsim/coins/sparkle.h>
 #include <worldsim/character/footprint/footprintmanager.h>
@@ -50,6 +51,13 @@
 #include <p3d/camera.hpp>
 #include <p3d/shadow.hpp>
 #include <p3d/view.hpp>
+#if defined(RAD_ANDROID)
+#include <SDL.h>
+#include <vr/csmbridge.h>
+#include <vr/openxrmanager.h>
+#include <p3d/primgroup.hpp>
+void pglSetVehicleRearLights(int mode,int count,const float* positions,const float* directions,const float* colour);
+#endif
 
 #include <events/eventmanager.h>
 #include <events/eventenum.h>
@@ -266,6 +274,107 @@ void WorldRenderLayer::Render()
             mpView[ view ]->BeginRender();
             END_PROFILE( "View Begin Render" );
 
+#if defined(RAD_ANDROID)
+            // Enhanced mode selects the per-pixel lighting path. Enable it
+            // before WorldScene::Render because static level geometry is
+            // submitted directly during the spatial-tree traversal.
+            const bool enhancedMaterials=SharOpenXR::IsEnhancedMaterialsEnabled();
+            rmt::Vector worldSun(0.45f,1.0f,-0.30f),eyeSun;
+            worldSun.Normalize();
+            mpView[view]->GetCamera()->GetWorldToCameraMatrix().RotateVector(worldSun,&eyeSun);
+            eyeSun.Normalize();
+            p3dSetEnhancedSunDirection(eyeSun);
+            p3dSetEnhancedWorldMaterials(enhancedMaterials);
+
+            // Feed the closest active pair of rear lamps to the lightweight
+            // GLES lighting path. Positions are taken from brake/reverse
+            // joints, then converted to the current eye space used by shaders.
+            int rearMode=SharOpenXR::GetVehicleLightMode();
+            float rearPositions[24]={0.0f},rearDirections[24]={0.0f},rearColour[3]={1.0f,0.025f,0.012f};
+            Vehicle* nearestRear[4]={NULL,NULL,NULL,NULL};
+            float nearestDistance[4]={1000000.0f,1000000.0f,1000000.0f,1000000.0f};
+            VehicleCentral* rearVehicles=GetVehicleCentral();
+            Vehicle** rearList=NULL; int rearCount=0;
+            if(rearMode>0 && rearVehicles)
+                rearVehicles->GetActiveVehicleList(rearList,rearCount);
+            const rmt::Vector eyeWorld=mpView[view]->GetCamera()->GetCameraToWorldMatrix().Row(3);
+            for(int rearIndex=0;rearIndex<rearCount;++rearIndex)
+            {
+                Vehicle* candidate=rearList[rearIndex];
+                if(!candidate || !candidate->mGeometryVehicle ||
+                   (!candidate->mGeometryVehicle->AreBrakeLightsOn() &&
+                    !candidate->mReverseLightsOn)) continue;
+                rmt::Vector delta=candidate->GetTransform().Row(3)-eyeWorld;
+                const float distance=delta.MagnitudeSqr();
+                for(int slot=0;slot<4;++slot)
+                {
+                    if(distance>=nearestDistance[slot]) continue;
+                    for(int move=3;move>slot;--move)
+                    {
+                        nearestDistance[move]=nearestDistance[move-1];
+                        nearestRear[move]=nearestRear[move-1];
+                    }
+                    nearestDistance[slot]=distance;
+                    nearestRear[slot]=candidate;
+                    break;
+                }
+            }
+            int rearLightCount=0;
+            const rmt::Matrix& worldToEye=mpView[view]->GetCamera()->GetWorldToCameraMatrix();
+            // Two closest cars are enough for the small rear-light volumes and
+            // halve the worst-case fragment cost on standalone VR (2/4 lights
+            // for Optimized/Max instead of 4/8).
+            for(int vehicleSlot=0;vehicleSlot<2;++vehicleSlot)
+            {
+                Vehicle* rearVehicle=nearestRear[vehicleSlot];
+                if(!rearVehicle || !rearVehicle->mGeometryVehicle) continue;
+                rmt::Vector rearWorld[2];
+                if(!rearVehicle->mGeometryVehicle->GetRearLightWorldPositions(
+                       rearVehicle->mReverseLightsOn,rearWorld)) continue;
+                rmt::Vector rearEye[2];
+                rmt::Vector rearWorldDirection;
+                rearVehicle->GetTransform().RotateVector(rmt::Vector(0.0f,-0.22f,-1.0f),&rearWorldDirection);
+                rearWorldDirection.Normalize();
+                rmt::Vector rearEyeDirection;
+                worldToEye.RotateVector(rearWorldDirection,&rearEyeDirection);
+                rearEyeDirection.Normalize();
+                // rmt::Matrix::Transform uses the affine translation layout
+                // opposite to the one uploaded as the GLES view matrix here.
+                // Transforming an absolute world point consequently left most
+                // of the world translation in the result (hundreds of units),
+                // while paintPosition is camera-relative.  Rotate an explicit
+                // camera-relative delta instead so both sides use eye space.
+                const rmt::Vector cameraWorld=mpView[view]->GetCamera()->GetCameraToWorldMatrix().Row(3);
+                worldToEye.RotateVector(rearWorld[0]-cameraWorld,&rearEye[0]);
+                worldToEye.RotateVector(rearWorld[1]-cameraWorld,&rearEye[1]);
+                if(rearMode==1)
+                {
+                    const rmt::Vector midpoint=(rearEye[0]+rearEye[1])*0.5f;
+                    rearPositions[rearLightCount*3]=midpoint.x;
+                    rearPositions[rearLightCount*3+1]=midpoint.y;
+                    rearPositions[rearLightCount*3+2]=midpoint.z;
+                    rearDirections[rearLightCount*3]=rearEyeDirection.x;
+                    rearDirections[rearLightCount*3+1]=rearEyeDirection.y;
+                    rearDirections[rearLightCount*3+2]=rearEyeDirection.z;
+                    ++rearLightCount;
+                }
+                else
+                {
+                    for(int light=0;light<2 && rearLightCount<8;++light,++rearLightCount)
+                    {
+                        rearPositions[rearLightCount*3]=rearEye[light].x;
+                        rearPositions[rearLightCount*3+1]=rearEye[light].y;
+                        rearPositions[rearLightCount*3+2]=rearEye[light].z;
+                        rearDirections[rearLightCount*3]=rearEyeDirection.x;
+                        rearDirections[rearLightCount*3+1]=rearEyeDirection.y;
+                        rearDirections[rearLightCount*3+2]=rearEyeDirection.z;
+                    }
+                }
+            }
+            if(rearLightCount==0) rearMode=0;
+            pglSetVehicleRearLights(rearMode,rearLightCount,rearPositions,rearDirections,rearColour);
+#endif
+
             int i;
             
             if(!mMirror)
@@ -283,16 +392,87 @@ void WorldRenderLayer::Render()
             }
 
             BEGIN_PROFILE( "Render WorldScene" );
-            mpWorldScene->Render( view );
+#if defined(RAD_ANDROID)
+            // Both eyes use the same midpoint VR culling camera. Rebuilding
+            // and sorting identical visibility lists for the right eye was a
+            // large single-threaded CPU cost; retain the left-eye lists and
+            // submit them again with the right-eye view/projection matrices.
+            if(!SharOpenXR::IsRightEyeRendering() || GetNumViews()>1)
+#endif
+                mpWorldScene->Render( view );
 #ifdef DEBUGWATCH
             mDebugInnerRenderTime = radTimeGetMicroseconds()-mDebugInnerRenderTime;
 #endif
             END_PROFILE( "Render WorldScene" );
 
+#if defined(RAD_ANDROID)
+            // Generate three world-locked cascades once per XR frame. The
+            // second eye reuses their depth maps and only updates matrices.
+            tCamera* shadowEyeCamera=mpView[view]->GetCamera();
+            const bool csmAllowed=SharOpenXR::IsCsmEnabled();
+            const float casterHalfWidths[3]={24.0f,56.0f,224.0f};
+            for(int cascadeIndex=0;csmAllowed && cascadeIndex<3;++cascadeIndex)
+            {
+                rmt::Matrix lightWorldToCamera,lightCameraToWorld;
+                if(VrBeginSunShadowMap(p3d::pddi,cascadeIndex,
+                       shadowEyeCamera->GetCameraToWorldMatrix(),
+                       &lightWorldToCamera,&lightCameraToWorld))
+                {
+                    p3d::context->LoadViewMatrix(lightWorldToCamera,
+                                                 lightCameraToWorld);
+                    // The near map is dynamic-only and cleared every frame.
+                    // Static casters live in cached mid/far maps and are merged
+                    // with it while sampling, avoiding a full static replay at
+                    // headset refresh rate.
+                    mpWorldScene->RenderCsmCasters(cascadeIndex>0,
+                                                   cascadeIndex==0,
+                                                   lightWorldToCamera,
+                                                   casterHalfWidths[cascadeIndex],
+                                                   155.0f);
+                    if(cascadeIndex==0)
+                    {
+                        GetCoinManager()->RenderCsmCasters();
+                        CharacterManager* characters=GetCharacterManager();
+                        for(int characterIndex=0;
+                            characters && characterIndex<characters->GetMaxCharacters();
+                            ++characterIndex)
+                        {
+                            Character* character=characters->GetCharacter(characterIndex);
+                            if(character) character->DisplayCsmCaster();
+                        }
+
+                        VehicleCentral* vehicles=GetVehicleCentral();
+                        Vehicle** activeVehicles=NULL;
+                        int vehicleCount=0;
+                        if(vehicles) vehicles->GetActiveVehicleList(activeVehicles,vehicleCount);
+                        for(int vehicleIndex=0;vehicleIndex<vehicleCount;++vehicleIndex)
+                        {
+                            Vehicle* vehicle=activeVehicles[vehicleIndex];
+                            if(vehicle) vehicle->Display();
+                        }
+                    }
+                    VrEndSunShadowMap(p3d::pddi,cascadeIndex,
+                        shadowEyeCamera->GetCameraToWorldMatrix());
+                    p3d::context->LoadViewMatrix(
+                        shadowEyeCamera->GetWorldToCameraMatrix(),
+                        shadowEyeCamera->GetCameraToWorldMatrix());
+                }
+            }
+#endif
+
             //p3d::inventory->PushSection();
             //p3d::inventory->SelectSection("Default");
 
+#if defined(RAD_ANDROID)
+            VrEnableSunShadowReceivers(p3d::pddi,csmAllowed);
+#endif
             mpWorldScene->RenderOpaque();
+
+#if defined(RAD_ANDROID)
+            // CSM is sampled by the normal opaque shader. Keep transparent
+            // foliage, glass, particles and later UI passes on the legacy path.
+            VrEnableSunShadowReceivers(p3d::pddi,false);
+#endif
 
             BEGIN_PROFILE( "Render coins" );
             GetCoinManager()->Render();
@@ -311,8 +491,32 @@ void WorldRenderLayer::Render()
             */
             GetFootprintManager()->Render();
             BEGIN_PROFILE( "Render Simple Shadows" );
+#if defined(RAD_ANDROID)
+            if(SharOpenXR::IsVrModeEnabled())
+            {
+                // Without CSM, retain the original blob shadows except for
+                // the vehicle surrounding the first-person camera. With CSM,
+                // keep only character blobs and discard every old vehicle or
+                // prop shadow so it cannot double the dynamic sun shadow.
+                Avatar* shadowAvatar=GetAvatarManager()->GetAvatarForPlayer(0);
+                Vehicle* playerVehicle=shadowAvatar?shadowAvatar->GetVehicle():NULL;
+                mpWorldScene->RenderSimpleShadows(csmAllowed,
+                                                   csmAllowed?NULL:playerVehicle);
+            }
+            else
+            {
+                mpWorldScene->RenderSimpleShadows();
+            }
+#else
             mpWorldScene->RenderSimpleShadows();
+#endif
             END_PROFILE( "Render Simple Shadows" );
+
+#if defined(RAD_ANDROID)
+            // The following sorted pass contains glass, particles and foliage.
+            // Vehicles opt their opaque body groups back into mode 2 locally.
+            p3dSetEnhancedWorldMaterials(false);
+#endif
 
             //Temp Disable BBQ optimisation for cars, as it may be outstripped by
             // Kevin's fix to the art
@@ -330,21 +534,80 @@ void WorldRenderLayer::Render()
             END_PROFILE( "BBQ Display All" );
             BillboardQuadManager::Disable();
 
-            BEGIN_PROFILE( "RenderSparkles" );
-            // Render the procedural particle effects:
-            // coin glints, collection/spawn trail sparkles, hit sparks, etc.
-            GetSparkleManager()->Render( Sparkle::SRM_ExcludeSorted );
-            END_PROFILE( "RenderSparkles" );
-            
             //Drawing the characters and stuff after the shadows to attempt to 
             //eliminate the bleeding shadows.
             BEGIN_PROFILE( "Render Guts" );
+#if defined(RAD_ANDROID)
+            // Character shaders use PDDI_BLEND_ALPHA even when fully opaque.
+            // Apply CSM during their normal skinned colour pass. Replaying a
+            // second receiver pass rebuilt some level-specific skin buffers
+            // and could explode their vertices into long coloured strips.
+            VrEnableSunShadowReceivers(p3d::pddi,csmAllowed);
+            p3dSetEnhancedWorldMaterials(enhancedMaterials);
+#endif
             for(i = mpGuts.mUseSize-1; i>-1; i-- )
             {
                 mpGuts[i]->Display();
             }
             END_PROFILE( "Render Guts" );
-            
+
+#if defined(RAD_ANDROID)
+            VrEnableSunShadowReceivers(p3d::pddi,false);
+            // Apply AO only after opaque world geometry, vehicle composite
+            // drawables and characters have all populated the eye depth
+            // buffer. UI and the later CSM receiver overlay remain untouched.
+            SharOpenXR::ApplyGtao();
+
+            // Shadow receiver replay and every later debug/GUI-adjacent pass
+            // must use the original shaders.
+            p3dSetEnhancedWorldMaterials(false);
+            if(csmAllowed)
+            {
+                // Vehicles are sorted as translucent because their composite
+                // drawables contain glass, while characters live in mpGuts.
+                // Overlay only their visible solid geometry after the normal
+                // colour pass, without replaying particles or vehicle logic.
+                rmt::Vector receiverCentre(0.0f,0.0f,0.0f);
+                Avatar* receiverAvatar=GetAvatarManager()->GetAvatarForPlayer(0);
+                if(receiverAvatar) receiverAvatar->GetPosition(receiverCentre);
+                const float receiverRadiusSqr=40.0f*40.0f;
+
+                VrBeginSunShadowOverlay(p3d::pddi);
+                p3dSetCsmOpaqueReceiverOnly(true);
+                VehicleCentral* receiverVehicles=GetVehicleCentral();
+                Vehicle** receiverVehicleList=NULL;
+                int receiverVehicleCount=0;
+                if(receiverVehicles)
+                    receiverVehicles->GetActiveVehicleList(receiverVehicleList,
+                                                           receiverVehicleCount);
+                for(int vehicleIndex=0;vehicleIndex<receiverVehicleCount;++vehicleIndex)
+                {
+                    Vehicle* vehicle=receiverVehicleList[vehicleIndex];
+                    if(!vehicle) continue;
+                    rmt::Vector delta=vehicle->rPosition()-receiverCentre;
+                    if(delta.MagnitudeSqr()<=receiverRadiusSqr)
+                        vehicle->DisplayCsmReceiver();
+                }
+                p3dSetCsmOpaqueReceiverOnly(false);
+
+                VrEndSunShadowOverlay(p3d::pddi);
+                VrEnableSunShadowReceivers(p3d::pddi,false);
+            }
+#endif
+
+            BEGIN_PROFILE( "RenderSparkles" );
+            // Draw procedural transparency after the CSM receiver overlay.
+            // Otherwise the overlay is blended on top of vehicle damage
+            // smoke, making the vehicle's cascaded shadow visible through it.
+#if defined(RAD_ANDROID)
+            GetSparkleManager()->Render(SharOpenXR::IsVrModeEnabled() ?
+                                        Sparkle::SRM_IncludeSorted :
+                                        Sparkle::SRM_ExcludeSorted);
+#else
+            GetSparkleManager()->Render( Sparkle::SRM_ExcludeSorted );
+#endif
+            END_PROFILE( "RenderSparkles" );
+
             BEGIN_PROFILE( "Render Trigger Volume Tracker" );
             GetTriggerVolumeTracker()->Render();
             END_PROFILE( "Render Trigger Volume Tracker" );
@@ -358,6 +621,17 @@ void WorldRenderLayer::Render()
             BEGIN_PROFILE( "Lens Flare Render" );
             LensFlareDSG::DisplayAllFlares();
             END_PROFILE( "Lens Flare Render" );
+
+#if defined(RAD_ANDROID)
+            // Do not project the world shadow map onto subsequent GUI layers.
+            VrEnableSunShadowReceivers(p3d::pddi,false);
+
+            // Keep controller hands inside the active tView.  EndRender tears
+            // down the level lights, which made hands submitted later by the
+            // RenderManager flat and much darker than character geometry.
+            if(mirrorPass==0)
+                SharOpenXR::RenderControllerHands(mpView[view]->GetCamera());
+#endif
 
             BEGIN_PROFILE( "View End Render" );
             mpView[ view ]->EndRender();

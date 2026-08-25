@@ -152,6 +152,7 @@ mbIsRumbleOn( false )
     for ( i = 0; i < Input::MaxPhysicalButtons; i++ )
     {
         mVirtualInputActive[ i ] = false;
+        mVirtualInputPending[ i ] = false;
     }
 
 #if defined(RAD_PS2) || defined(RAD_GAMECUBE)
@@ -214,11 +215,18 @@ void UserController::SetVirtualInputValue( unsigned int index, float value, bool
         return;
     }
 
-    mButtonArray[ index ].SetValue( value );
-
-    if ( forceChange )
+    // Do not mark an unchanged virtual input as newly changed every frame.
+    // Mappable uses TimeSinceChange to distinguish duplicate sources; resetting
+    // it continuously can make a lower value (especially release to zero) lose
+    // to the previous non-zero value and leave an axis latched.
+    if ( forceChange || mButtonArray[ index ].GetValue() != value )
     {
-        mButtonArray[ index ].ForceChange();
+        mButtonArray[ index ].SetValue( value );
+        mVirtualInputPending[ index ] = true;
+        if ( forceChange )
+        {
+            mButtonArray[ index ].ForceChange();
+        }
     }
 
     mVirtualInputActive[ index ] = ( value != 0.0f );
@@ -235,6 +243,7 @@ void UserController::ClearVirtualInputs( void )
             mButtonArray[ i ].SetValue( 0.0f );
             mButtonArray[ i ].ForceChange();
             mVirtualInputActive[ i ] = false;
+            mVirtualInputPending[ i ] = true;
         }
     }
 }
@@ -631,7 +640,7 @@ void UserController::Update( unsigned timeins )
     {
         // always rebrodcast non-zero button values (otherwise multiple physical -> single logical
         // button mappiung will screw up in some cases)
-        if((mButtonArray[ i ].TimeSinceChange() == 0) || (mButtonArray[ i ].IsDown()))
+        if(mVirtualInputPending[i] || (mButtonArray[ i ].TimeSinceChange() == 0) || (mButtonArray[ i ].IsDown()))
         {
             for ( unsigned j = 0; j < Input::MaxMappables; j++ )
             {
@@ -640,6 +649,7 @@ void UserController::Update( unsigned timeins )
                     mMappable[ j ]->DispatchOnButton( m_controllerId, i, &mButtonArray[ i ] );
                 }
             }
+            mVirtualInputPending[i] = false;
         }
     }
 
