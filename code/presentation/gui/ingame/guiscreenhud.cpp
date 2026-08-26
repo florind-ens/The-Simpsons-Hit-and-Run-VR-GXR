@@ -1537,8 +1537,6 @@ CGuiScreenHud::UpdateNumCoinsDisplay( int numCoins, bool show )
     static int coinPosX = CGuiScreen::IsWideScreenDisplay() ? 540 : 605;
     static int coinPosY = 432;
 #ifdef RAD_ANDROID
-    // The persistent coin is composed beside the captured counter in the
-    // spatial HUD. Do not leave CoinManager's orthographic copy on the eyes.
     GetCoinManager()->SetHUDCoin( coinPosX, coinPosY,
         show && !SharOpenXR::IsSpatialHudEnabled() );
 #else

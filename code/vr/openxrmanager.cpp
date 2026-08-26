@@ -20,9 +20,11 @@
 #include <vr/vr_hand_mesh.h>
 #include <vr/vr_hand_texture.h>
 #include <input/inputmanager.h>
+#include <presentation/gui/guiscreen.h>
 #include <worldsim/character/character.h>
 #include <worldsim/character/charactercontroller.h>
 #include <worldsim/character/charactermanager.h>
+#include <worldsim/coins/coinmanager.h>
 #include <camera/supercam.h>
 #include <camera/supercamcentral.h>
 #include <camera/supercammanager.h>
@@ -112,7 +114,7 @@ struct State
     bool embeddedHudRendering;
     bool radarRendering;
     unsigned radarDrawCount;
-    GLuint radarFramebuffer,radarTexture,radarDisplayTexture,radarDepthBuffer,radarProgram;
+    GLuint radarFramebuffer,radarTexture,radarDisplayTexture,radarDepthBuffer,radarProgram,hudQuadVbo;
     GLint radarSavedFramebuffer,radarSavedViewport[4];
     GLint radarSavedScissor[4];
     bool radarSavedScissorEnabled;
@@ -139,6 +141,7 @@ struct State
     bool frontendPlaneActive;
     bool frontendPlaneRendering;
     bool frontendPlaneAnchorValid;
+    bool pauseCoinVisible;
     XrPosef frontendPlaneAnchor;
     bool enhancedUiConvergence;
     bool vrModeEnabled;
@@ -535,6 +538,7 @@ static void DestroySwapchainsAndRenderTargets()
     if(g.radarTexture) glDeleteTextures(1,&g.radarTexture);
     if(g.radarDisplayTexture) glDeleteTextures(1,&g.radarDisplayTexture);
     if(g.radarProgram) glDeleteProgram(g.radarProgram);
+    if(g.hudQuadVbo) glDeleteBuffers(1,&g.hudQuadVbo);
     glDeleteFramebuffers(State::MISSION_HUD_COUNT,g.missionHudFramebuffer);
     glDeleteTextures(State::MISSION_HUD_COUNT,g.missionHudTexture);
     if(g.depthTexture) glDeleteTextures(1,&g.depthTexture);
@@ -1351,7 +1355,7 @@ void EndMultiview()
     // Ordinary HUD shaders cannot target a two-view framebuffer. Draw their
     // cached planes into each array layer after the world broadcast finishes.
     glBindFramebuffer(GL_FRAMEBUFFER,g.layerFramebuffer);
-    for(unsigned eye=0;eye<2;++eye){g.activeEye=eye+1;g.FramebufferTextureLayer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,g.eyes[0].images[g.multiviewImageIndex].image,0,eye);g.FramebufferTextureLayer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,g.multiviewDepthTexture,0,eye);DrawRadarPlane();DrawMissionHudPlanes();}
+    for(unsigned eye=0;eye<2;++eye){g.activeEye=eye+1;g.FramebufferTextureLayer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,g.eyes[0].images[g.multiviewImageIndex].image,0,eye);g.FramebufferTextureLayer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,g.multiviewDepthTexture,0,eye);DrawRadarPlane();DrawMissionHudPlanes();DrawPauseCoinIcon();}
     // xrReleaseSwapchainImage transfers ownership to the runtime. A flush is
     // sufficient to make queued GL work visible without stalling CPU and GPU
     // every frame as glFinish did.
@@ -1492,6 +1496,7 @@ void EndEye(unsigned eye)
     // target is still bound, so its 2D frame cannot remain left-eye-only.
     DrawRadarPlane();
     DrawMissionHudPlanes();
+    DrawPauseCoinIcon();
     if(eye==1 && g.multiviewImageAcquired)
     {
         XrSwapchainImageReleaseInfo ri={XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
@@ -1579,6 +1584,7 @@ bool BeginRadarCapture(int xMin,int yMin,int xMax,int yMax)
         const char* vs="precision highp float;attribute vec4 position;attribute vec2 texcoord;varying vec2 uv;void main(){gl_Position=position;uv=texcoord;}";
         const char* fs="precision mediump float;uniform sampler2D tex;varying vec2 uv;void main(){vec4 c=texture2D(tex,uv);if(c.a<0.01)discard;gl_FragColor=c;}";
         g.radarProgram=CreateGlProgram(vs,fs);
+        glGenBuffers(1,&g.hudQuadVbo);
     }
     if(!g.radarFramebuffer || !g.radarTexture ||
        !g.radarDepthBuffer || !g.radarProgram) return false;
@@ -1785,6 +1791,16 @@ void EndMissionHudCapture()
                 minX=std::max(0,centreX-half);
                 maxX=std::min(textureWidth-1,centreX+half);
             }
+            else if(slot==3)
+            {
+                // Bitmap text may expose only its final glyph during the
+                // first transition frame.  Reserve room to its left for the
+                // complete counter instead of permanently cropping to that
+                // one glyph until the application is restarted.
+                const int height=maxY-minY+1;
+                const int minimumWidth=height*4;
+                minX=std::max(0,std::min(minX,maxX-minimumWidth+1));
+            }
             g.missionHudUv[slot][0]=minX/(float)textureWidth;
             g.missionHudUv[slot][1]=minY/(float)textureHeight;
             g.missionHudUv[slot][2]=(maxX+1)/(float)textureWidth;
@@ -1811,6 +1827,23 @@ void EndMissionHudCapture()
     if(g.radarSavedCullEnabled) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
     glColorMask(g.radarSavedColourMask[0],g.radarSavedColourMask[1],
                 g.radarSavedColourMask[2],g.radarSavedColourMask[3]);
+}
+
+void CaptureSpatialCoinIcon()
+{
+    // Capture beside the counter itself, after slot 3 has proved that the HUD
+    // group is actually being submitted.  FrontEndRenderLayer can be skipped
+    // while PresentationManager is busy, which previously left slot 4 empty.
+    if(BeginMissionHudCapture(4,0,0,640,480))
+    {
+        // Slot 3 and the coin both use the orthographic enum, but they have
+        // different offscreen targets and therefore different active
+        // projection matrices.  Re-submit even though the enum is unchanged.
+        const pddiProjectionMode mode=p3d::pddi->GetProjectionMode();
+        p3d::pddi->SetProjectionMode(mode);
+        GetCoinManager()->HUDRender(true);
+        EndMissionHudCapture();
+    }
 }
 
 static void DrawRadarPlane()
@@ -1864,8 +1897,9 @@ static void DrawRadarPlane()
     GLint oldProgram=0,oldArray=0,oldTexture=0,oldActive=0; glGetIntegerv(GL_CURRENT_PROGRAM,&oldProgram); glGetIntegerv(GL_ARRAY_BUFFER_BINDING,&oldArray); glGetIntegerv(GL_ACTIVE_TEXTURE,&oldActive); glActiveTexture(GL_TEXTURE0); glGetIntegerv(GL_TEXTURE_BINDING_2D,&oldTexture);
     const GLboolean depth=glIsEnabled(GL_DEPTH_TEST),blend=glIsEnabled(GL_BLEND),cull=glIsEnabled(GL_CULL_FACE),scissor=glIsEnabled(GL_SCISSOR_TEST);
     glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glDisable(GL_SCISSOR_TEST); glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
-    glUseProgram(g.radarProgram); glBindBuffer(GL_ARRAY_BUFFER,0); glBindTexture(GL_TEXTURE_2D,g.radarTexture); glUniform1i(glGetUniformLocation(g.radarProgram,"tex"),0);
-    GLint pa=glGetAttribLocation(g.radarProgram,"position"),ta=glGetAttribLocation(g.radarProgram,"texcoord"); glEnableVertexAttribArray(pa);glEnableVertexAttribArray(ta);glVertexAttribPointer(pa,4,GL_FLOAT,GL_FALSE,6*sizeof(float),vertices);glVertexAttribPointer(ta,2,GL_FLOAT,GL_FALSE,6*sizeof(float),vertices+4);glDrawArrays(GL_TRIANGLE_STRIP,0,4);glDisableVertexAttribArray(pa);glDisableVertexAttribArray(ta);
+    glUseProgram(g.radarProgram); glBindBuffer(GL_ARRAY_BUFFER,g.hudQuadVbo); glBindTexture(GL_TEXTURE_2D,g.radarTexture); glUniform1i(glGetUniformLocation(g.radarProgram,"tex"),0);
+    glBufferData(GL_ARRAY_BUFFER,sizeof(vertices),vertices,GL_STREAM_DRAW);
+    GLint pa=glGetAttribLocation(g.radarProgram,"position"),ta=glGetAttribLocation(g.radarProgram,"texcoord"); glEnableVertexAttribArray(pa);glEnableVertexAttribArray(ta);glVertexAttribPointer(pa,4,GL_FLOAT,GL_FALSE,6*sizeof(float),reinterpret_cast<const void*>(0));glVertexAttribPointer(ta,2,GL_FLOAT,GL_FALSE,6*sizeof(float),reinterpret_cast<const void*>(4*sizeof(float)));glDrawArrays(GL_TRIANGLE_STRIP,0,4);glDisableVertexAttribArray(pa);glDisableVertexAttribArray(ta);
     glBindTexture(GL_TEXTURE_2D,oldTexture); glActiveTexture(oldActive); glBindBuffer(GL_ARRAY_BUFFER,oldArray); glUseProgram(oldProgram); if(depth)glEnable(GL_DEPTH_TEST);else glDisable(GL_DEPTH_TEST);if(blend)glEnable(GL_BLEND);else glDisable(GL_BLEND);if(cull)glEnable(GL_CULL_FACE);else glDisable(GL_CULL_FACE);if(scissor)glEnable(GL_SCISSOR_TEST);else glDisable(GL_SCISSOR_TEST);
 }
 
@@ -1887,11 +1921,13 @@ static void DrawMissionHudQuad(GLuint texture,const float* uv,
         vertices[i*6]=p.x;vertices[i*6+1]=p.y;vertices[i*6+2]=p.z;vertices[i*6+3]=p.w;
         vertices[i*6+4]=tc[i][0];vertices[i*6+5]=tc[i][1];}
     glBindTexture(GL_TEXTURE_2D,texture);
+    glBindBuffer(GL_ARRAY_BUFFER,g.hudQuadVbo);
+    glBufferData(GL_ARRAY_BUFFER,sizeof(vertices),vertices,GL_STREAM_DRAW);
     const GLint pa=glGetAttribLocation(g.radarProgram,"position");
     const GLint ta=glGetAttribLocation(g.radarProgram,"texcoord");
     glEnableVertexAttribArray(pa);glEnableVertexAttribArray(ta);
-    glVertexAttribPointer(pa,4,GL_FLOAT,GL_FALSE,6*sizeof(float),vertices);
-    glVertexAttribPointer(ta,2,GL_FLOAT,GL_FALSE,6*sizeof(float),vertices+4);
+    glVertexAttribPointer(pa,4,GL_FLOAT,GL_FALSE,6*sizeof(float),reinterpret_cast<const void*>(0));
+    glVertexAttribPointer(ta,2,GL_FLOAT,GL_FALSE,6*sizeof(float),reinterpret_cast<const void*>(4*sizeof(float)));
     glDrawArrays(GL_TRIANGLE_STRIP,0,4);
     glDisableVertexAttribArray(pa);glDisableVertexAttribArray(ta);
 }
@@ -1928,7 +1964,11 @@ static void DrawMissionHudPlanes()
     glUseProgram(g.radarProgram);glBindBuffer(GL_ARRAY_BUFFER,0);
     glUniform1i(glGetUniformLocation(g.radarProgram,"tex"),0);
     for(unsigned slot=0;slot<State::MISSION_HUD_COUNT;++slot){
-        if(!g.missionHudVisible[slot]||!g.missionHudTexture[slot]||
+        // Slot 4 is the persistent 3D icon belonging to counter slot 3.  Its
+        // clean texture is refreshed independently, but it must follow the
+        // counter's visibility (including the pause-menu counter).
+        const bool visible=slot==4?g.missionHudVisible[3]:g.missionHudVisible[slot];
+        if(!visible||!g.missionHudTexture[slot]||
            !g.missionHudCropValid[slot]) continue;
         rmt::Matrix anchor=base;
         if(slot==5)
@@ -1977,7 +2017,7 @@ static void DrawMissionHudPlanes()
         // icon is the centre, timer above it and objective text below it.
         const float verticalOffset=slot==2?0.080f:(slot==0?0.0f:-0.085f);
         if(slot!=3 && slot!=4 && slot!=5) anchor.Row(3)=base.Row(3)+base.Row(1)*verticalOffset;
-        if(slot==4) anchor.Row(3)=anchor.Row(3)-anchor.Row(0)*0.095f;
+        if(slot==4) anchor.Row(3)=anchor.Row(3)-anchor.Row(0)*0.070f;
         const float aspect=g.missionHudAspect[slot]>0.0f?
             g.missionHudAspect[slot]:1.0f;
         DrawMissionHudQuad(g.missionHudTexture[slot],g.missionHudUv[slot],anchor,
@@ -2206,6 +2246,81 @@ bool GetActiveFrontendProjection(rmt::Matrix* out,int* width,int* height)
     *width=eye.width;
     *height=eye.height;
     return true;
+}
+void SetPauseCoinVisible(bool visible){g.pauseCoinVisible=visible;}
+void DrawPauseCoinIcon()
+{
+    const unsigned slot=4;
+    if(!g.pauseCoinVisible || !g.activeEye ||
+       !g.frontendPlaneAnchorValid || !g.radarProgram || !g.hudQuadVbo ||
+       !g.missionHudTexture[slot] || !g.missionHudCropValid[slot]) return;
+
+    rmt::Matrix projection;
+    int width=0,height=0;
+    // FrontEndRenderLayer disables projection interception after Scrooby so
+    // later render layers keep their own cameras. Re-enable it only while we
+    // obtain the same world-locked panel matrix for this final EndEye overlay.
+    const bool frontendRendering=g.frontendPlaneRendering;
+    g.frontendPlaneRendering=true;
+    const bool haveProjection=GetActiveFrontendProjection(&projection,&width,&height);
+    g.frontendPlaneRendering=frontendRendering;
+    if(!haveProjection) return;
+
+    // Scrooby's 640x480 canvas occupies x [-0.5, 0.5] and
+    // y [-0.375, 0.375] on the frontend plane.  Put the cached clean coin
+    // immediately to the left of the pause screen's NumCoins text.
+    const float centreX=(CGuiScreen::IsWideScreenDisplay()?540.0f:605.0f)/640.0f-0.5f;
+    const float centreY=432.0f/640.0f-0.375f;
+    const float halfY=0.040f;
+    float aspect=g.missionHudAspect[slot]>0.0f?g.missionHudAspect[slot]:1.0f;
+    aspect=std::max(0.4f,std::min(2.0f,aspect));
+    const float halfX=halfY*aspect;
+    const float xy[4][2]={{centreX-halfX,centreY-halfY},
+                          {centreX+halfX,centreY-halfY},
+                          {centreX-halfX,centreY+halfY},
+                          {centreX+halfX,centreY+halfY}};
+    const float* uv=g.missionHudUv[slot];
+    const float tc[4][2]={{uv[0],uv[1]},{uv[2],uv[1]},
+                          {uv[0],uv[3]},{uv[2],uv[3]}};
+    float vertices[24];
+    for(int i=0;i<4;++i)
+    {
+        // FeScreen applies Translate(-0.5, -0.375, 0.5) before submitting
+        // the pause page. Use that exact local depth so the icon lies on the
+        // menu plane instead of floating several metres in front of it.
+        rmt::Vector4 p(xy[i][0],xy[i][1],0.5f,1.0f);
+        p.Transform(projection);
+        vertices[i*6]=p.x;vertices[i*6+1]=p.y;
+        vertices[i*6+2]=p.z;vertices[i*6+3]=p.w;
+        vertices[i*6+4]=tc[i][0];vertices[i*6+5]=tc[i][1];
+    }
+
+    GLint oldProgram=0,oldArray=0,oldTexture=0,oldActive=0;
+    glGetIntegerv(GL_CURRENT_PROGRAM,&oldProgram);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING,&oldArray);
+    glGetIntegerv(GL_ACTIVE_TEXTURE,&oldActive);glActiveTexture(GL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D,&oldTexture);
+    const GLboolean depth=glIsEnabled(GL_DEPTH_TEST),blend=glIsEnabled(GL_BLEND);
+    const GLboolean cull=glIsEnabled(GL_CULL_FACE),scissor=glIsEnabled(GL_SCISSOR_TEST);
+    glDisable(GL_DEPTH_TEST);glDisable(GL_CULL_FACE);glDisable(GL_SCISSOR_TEST);
+    glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+    glUseProgram(g.radarProgram);glBindBuffer(GL_ARRAY_BUFFER,g.hudQuadVbo);
+    glBindTexture(GL_TEXTURE_2D,g.missionHudTexture[slot]);
+    glUniform1i(glGetUniformLocation(g.radarProgram,"tex"),0);
+    glBufferData(GL_ARRAY_BUFFER,sizeof(vertices),vertices,GL_STREAM_DRAW);
+    const GLint pa=glGetAttribLocation(g.radarProgram,"position");
+    const GLint ta=glGetAttribLocation(g.radarProgram,"texcoord");
+    glEnableVertexAttribArray(pa);glEnableVertexAttribArray(ta);
+    glVertexAttribPointer(pa,4,GL_FLOAT,GL_FALSE,6*sizeof(float),reinterpret_cast<const void*>(0));
+    glVertexAttribPointer(ta,2,GL_FLOAT,GL_FALSE,6*sizeof(float),reinterpret_cast<const void*>(4*sizeof(float)));
+    glDrawArrays(GL_TRIANGLE_STRIP,0,4);
+    glDisableVertexAttribArray(pa);glDisableVertexAttribArray(ta);
+    glBindTexture(GL_TEXTURE_2D,oldTexture);glActiveTexture(oldActive);
+    glBindBuffer(GL_ARRAY_BUFFER,oldArray);glUseProgram(oldProgram);
+    if(depth)glEnable(GL_DEPTH_TEST);else glDisable(GL_DEPTH_TEST);
+    if(blend)glEnable(GL_BLEND);else glDisable(GL_BLEND);
+    if(cull)glEnable(GL_CULL_FACE);else glDisable(GL_CULL_FACE);
+    if(scissor)glEnable(GL_SCISSOR_TEST);else glDisable(GL_SCISSOR_TEST);
 }
 void SetEnhancedUiConvergence(bool enabled){ g.enhancedUiConvergence=enabled; }
 bool HasEnhancedUiConvergence(){ return g.enhancedUiConvergence; }

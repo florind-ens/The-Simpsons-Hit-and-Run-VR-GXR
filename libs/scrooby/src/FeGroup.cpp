@@ -74,7 +74,11 @@ void FeGroup::Display()
     if(captured)
     {
         if(isRadar) SharOpenXR::EndRadarCapture();
-        else SharOpenXR::EndMissionHudCapture();
+        else
+        {
+            SharOpenXR::EndMissionHudCapture();
+            if(missionSlot==3) SharOpenXR::CaptureSpatialCoinIcon();
+        }
         // Re-submit the unchanged projection mode: the spatial radar matrix
         // was selected without changing this enum, so otherwise PDDI keeps it
         // cached and projects all following HUD groups off screen as well.

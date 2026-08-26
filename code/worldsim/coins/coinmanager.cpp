@@ -1055,20 +1055,30 @@ void CoinManager::OnCheatEntered( eCheatID cheatID, bool isEnabled )
 Rendering pass for the HUD. Used for when the coin flies up to the HUD counter.
 We set the state once and do all the rendering.
 =============================================================================*/
-void CoinManager::HUDRender( void )
+void CoinManager::HUDRender( bool counterIconOnly )
 {
     if( !m_pCoinDrawable )
     {
         return;
     }
-    bool renderHUDCoin = false;
-    if( mHUDCoinX > -1.0f && mHUDCoinX < 1.0f && mHUDCoinY > -1.0f && mHUDCoinY < 1.0f )
+    bool renderHUDCoin = counterIconOnly;
+    if( !counterIconOnly &&
+        mHUDCoinX > -1.0f && mHUDCoinX < 1.0f && mHUDCoinY > -1.0f && mHUDCoinY < 1.0f )
     {
         renderHUDCoin = true;
     }
     if( ( mNumHUDFlying > 0 ) || renderHUDCoin )
     {
 	    p3d::stack->Push();
+        const pddiCullMode oldCullMode=p3d::pddi->GetCullMode();
+        if( counterIconOnly )
+        {
+            // The GLES backend maps PDDI_CULL_NORMAL to GL_FRONT. For this
+            // model that preserves its inward-facing polygons. Cull GL_BACK
+            // through PDDI_CULL_INVERTED so the cached icon shows the coin's
+            // exterior shell, then restore the caller's mode below.
+            p3d::pddi->SetCullMode(PDDI_CULL_INVERTED);
+        }
         bool oldZWrite = p3d::pddi->GetZWrite();
         pddiCompareMode oldZComp = p3d::pddi->GetZCompare();
         if( oldZWrite )
@@ -1090,14 +1100,16 @@ void CoinManager::HUDRender( void )
             p3d::stack->Scale( 0.1f, 0.1f, 1.0f );
             float coinSin, coinCos;
             rmt::SinCos( ( mHUDCoinAngle * SPIN_MULTIPLIER ), &coinSin, &coinCos );
+            const float hudCoinX=counterIconOnly?0.0f:mHUDCoinX;
+            const float hudCoinY=counterIconOnly?0.0f:mHUDCoinY;
             rmt::Matrix transform( coinCos, 0.0f, -coinSin, 0.0f,
                                    0.0f, 1.0f, 0.0f, 0.0f,
                                    coinSin, 0.0f, coinCos, 0.0f,
-                                   mHUDCoinX * 5.0f, mHUDCoinY * 5.0f, 5.0f, 1.0f );
+                                   hudCoinX * 5.0f, hudCoinY * 5.0f, 5.0f, 1.0f );
 #ifndef RAD_RELEASE
             ++dbg_CoinsDrawn;
 #endif
-            if( mHUDSparkle <= 0 )
+            if( !counterIconOnly && mHUDSparkle <= 0 )
             {
                 rmt::Vector pos;
                 pos.ScaleAdd( rmt::Vector( mHUDCoinX, mHUDCoinY, 5.0f ), 0.2f, mCoinBounding.centre );
@@ -1114,6 +1126,7 @@ void CoinManager::HUDRender( void )
 	    p3d::stack->LoadIdentity();
         p3d::stack->Scale( 0.05f, 0.05f, 1.0f);
 
+        if( !counterIconOnly )
         for( int i = 0; i < NUM_COINS; ++i )
         {
             ActiveCoin& c = mActiveCoins[ i ];
@@ -1150,6 +1163,10 @@ void CoinManager::HUDRender( void )
         if( oldZComp != PDDI_COMPARE_ALWAYS )
         {
        	    p3d::pddi->SetZCompare( oldZComp );
+        }
+        if( counterIconOnly )
+        {
+            p3d::pddi->SetCullMode(oldCullMode);
         }
 	    p3d::stack->Pop();
     }

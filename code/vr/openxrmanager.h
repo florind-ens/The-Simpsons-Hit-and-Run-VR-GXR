@@ -34,6 +34,7 @@ namespace SharOpenXR
     bool BeginMissionHudCapture(unsigned slot, int xMin, int yMin,
                                 int xMax, int yMax);
     void EndMissionHudCapture();
+    void CaptureSpatialCoinIcon();
     bool IsRadarRendering() __attribute__((weak));
     bool IsRightEyeRendering();
     void PrepareRadarDraw() __attribute__((weak));
@@ -50,6 +51,8 @@ namespace SharOpenXR
     bool IsFrontendPlaneRendering() __attribute__((weak));
     bool GetActiveFrontendProjection(rmt::Matrix* projection, int* width,
                                      int* height) __attribute__((weak));
+    void SetPauseCoinVisible(bool visible);
+    void DrawPauseCoinIcon();
     void SetEnhancedUiConvergence(bool enabled);
     bool HasEnhancedUiConvergence() __attribute__((weak));
     bool GetEyeCamera(unsigned eye, tCamera* baseCamera,

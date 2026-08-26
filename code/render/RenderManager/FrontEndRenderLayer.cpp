@@ -122,15 +122,24 @@ void FrontEndRenderLayer::DrawCoinObject()
     SharOpenXR::SetEnhancedUiConvergence( true );
 #endif
     // Render HUD coin effects.
-    if((GetGameFlow()->GetCurrentContext() == CONTEXT_GAMEPLAY ||
-        GetGameFlow()->GetCurrentContext() == CONTEXT_PAUSE) &&
-	   !GetPresentationManager()->IsBusy())
+    const ContextEnum coinContext=GetGameFlow()->GetCurrentContext();
+    if((coinContext == CONTEXT_GAMEPLAY || coinContext == CONTEXT_PAUSE) &&
+	   (coinContext == CONTEXT_PAUSE || !GetPresentationManager()->IsBusy()))
 	{
 #if defined(RAD_ANDROID)
-        const bool captureVrCoin=GetCoinManager()->IsHUDCoinVisible() &&
+        // Capture a clean, centred counter icon.  The normal HUD render also
+        // contains coins flying across the screen, which made the crop depend
+        // on whichever animation happened to be present on its first frame.
+        const bool captureVrCoin=SharOpenXR::IsSpatialHudEnabled() &&
+            GetGameFlow()->GetCurrentContext()!=CONTEXT_PAUSE &&
             SharOpenXR::BeginMissionHudCapture(4,0,0,640,480);
 #endif
+#if defined(RAD_ANDROID)
+        if(captureVrCoin) GetCoinManager()->HUDRender(true);
+        else GetCoinManager()->HUDRender();
+#else
         GetCoinManager()->HUDRender();
+#endif
 #if defined(RAD_ANDROID)
         if(captureVrCoin) SharOpenXR::EndMissionHudCapture();
 #endif
@@ -329,13 +338,18 @@ void FrontEndRenderLayer::Render()
     const bool loadingScreen=
         screenId==CGuiWindow::GUI_SCREEN_ID_LOADING ||
         screenId==CGuiWindow::GUI_SCREEN_ID_LOADING_FE;
+    const bool pauseScreen=
+        screenId==CGuiWindow::GUI_SCREEN_ID_PAUSE_SUNDAY ||
+        screenId==CGuiWindow::GUI_SCREEN_ID_PAUSE_MISSION;
     const bool spatialFrontend=guiContext==CONTEXT_BOOTUP ||
         guiContext==CONTEXT_PAUSE ||
+        pauseScreen ||
         loadingScreen ||
         (guiContext==CONTEXT_FRONTEND &&
          screenId!=CGuiWindow::GUI_SCREEN_ID_MAIN_MENU);
     SharOpenXR::SetFrontendPlaneActive(spatialFrontend);
     SharOpenXR::SetFrontendPlaneRendering(spatialFrontend);
+    SharOpenXR::SetPauseCoinVisible(pauseScreen);
 #endif
 
     for( unsigned int view = 0; view < mNumViews; view++ )
@@ -350,6 +364,16 @@ void FrontEndRenderLayer::Render()
         mpView[ view ]->BeginRender();
 
         HeapMgr()->PushHeap( GMA_TEMP );
+
+#if defined(RAD_ANDROID)
+        // Gameplay is paused, but CoinManager keeps advancing its HUD angle.
+        // Refresh the clean cached icon so the final EndEye overlay retains
+        // the original rotating pause-menu coin animation.
+        if( pauseScreen )
+        {
+            SharOpenXR::CaptureSpatialCoinIcon();
+        }
+#endif
 
         if( !GetCoinManager()->DrawAfterGui() )
             DrawCoinObject();

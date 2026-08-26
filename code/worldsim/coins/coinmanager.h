@@ -54,7 +54,7 @@ public:
     void Update( int ElapsedMS ); // Elapsed milliseconds.
     void Render( void ); // Draw coins. Do simple frustum and distance check on them.
     void RenderCsmCasters( void ); // Draw world coins into the sun depth map.
-    void HUDRender( void ); // Draw any HUD animations.
+    void HUDRender( bool counterIconOnly = false ); // Draw HUD animations or the isolated counter icon.
 
     int GetBankValue( void ) const; // How much is in the bank.
     void AdjustBankValue( int DeltaCoins ); // Adjust the bank value without any visual SFX.
