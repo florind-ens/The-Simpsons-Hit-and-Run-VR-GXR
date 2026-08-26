@@ -840,11 +840,18 @@ void RenderManager::ContextUpdate( unsigned int iElapsedTime )
             currentGuiScreen==CGuiWindow::GUI_SCREEN_ID_PAUSE_MISSION ||
             nextGuiScreen==CGuiWindow::GUI_SCREEN_ID_PAUSE_SUNDAY ||
             nextGuiScreen==CGuiWindow::GUI_SCREEN_ID_PAUSE_MISSION;
+        PresentationManager* xrPresentation=GetPresentationManager();
+        FMVPlayer* xrMoviePlayer=xrPresentation?
+            xrPresentation->GetFMVPlayer():NULL;
+        const bool movieActive=xrMoviePlayer &&
+            (xrMoviePlayer->IsPlaying() || xrMoviePlayer->IsDecoderPlaying());
         // Screen-space frontend/pause/loading layers contain eye-dependent
         // convergence and anchoring that cannot be broadcast with the world
         // draw. Keep those relatively cheap contexts on the proven per-eye
-        // path; gameplay geometry remains true single-pass multiview.
+        // path. The movie renderer also uses a conventional single-view GLES
+        // shader, so keep an active FMV on the same proven dual-pass path.
         multiviewActive=currentXrContext==CONTEXT_GAMEPLAY && !pauseGuiPending &&
+                        !movieActive &&
                         SharOpenXR::BeginMultiview();
         renderPasses=multiviewActive?1:2;
     }
@@ -950,11 +957,21 @@ void RenderManager::ContextUpdate( unsigned int iElapsedTime )
     if(multiviewActive)
     {
         RenderLayer* guiLayer=mpRenderLayers[RenderEnums::GUI];
-        if(guiLayer && guiLayer->IsRenderReady())
+        PresentationManager* moviePresentation=GetPresentationManager();
+        FMVPlayer* moviePlayer=moviePresentation?
+            moviePresentation->GetFMVPlayer():NULL;
+        for(unsigned int guiEye=0;guiEye<2;++guiEye)
         {
-            for(unsigned int guiEye=0;guiEye<2;++guiEye)
+            if(!SharOpenXR::BeginMultiviewGuiEye(guiEye)) continue;
+
+            // BeginMultiviewGuiEye binds one layer of the array framebuffer.
+            // The movie renderer uses an ordinary (non-multiview) shader, so
+            // submit the decoded texture once to each bound eye just like the
+            // dual-pass path above.
+            if(moviePlayer) moviePlayer->RenderCurrentVrEye();
+
+            if(guiLayer && guiLayer->IsRenderReady())
             {
-                if(!SharOpenXR::BeginMultiviewGuiEye(guiEye)) continue;
                 rmt::Matrix originalGuiCameras[MAX_PLAYERS];
                 bool changedGuiCameras[MAX_PLAYERS]={false};
                 for(unsigned int view=0;view<guiLayer->GetNumViews();++view)
