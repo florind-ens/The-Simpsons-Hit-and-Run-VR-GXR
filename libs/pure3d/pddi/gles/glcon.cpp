@@ -1089,6 +1089,8 @@ pglPrimBuffer::pglPrimBuffer(pglContext* c, pddiPrimType type, unsigned vertexFo
     indices = NULL;
 
     valid = false;
+    indexValid = false;
+    dynamicVertexBuffer = false;
     vertexBuffer = indexBuffer = vertexArray = 0;
 
     primType = type;
@@ -1170,6 +1172,8 @@ void pglPrimBuffer::Unlock(pddiPrimBufferStream* stream)
     if(colour)
         colour -= total * stride;
 
+    if(vertexBuffer)
+        dynamicVertexBuffer = true;
     valid = false;
 }
 
@@ -1188,6 +1192,7 @@ void pglPrimBuffer::SetIndices(unsigned short* i, int count)
 {
     PDDIASSERT(count <= (int)indexCount);
     memcpy(indices, i, count * sizeof(unsigned short));
+    indexValid = false;
     valid = false;
 }
 
@@ -1204,14 +1209,19 @@ void pglPrimBuffer::Display(void)
         if(!vertexBuffer)
             glGenBuffers(1, &vertexBuffer);
         glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
-        glBufferData(GL_ARRAY_BUFFER, mem, buffer, GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, mem, buffer,
+                     dynamicVertexBuffer ? GL_STREAM_DRAW : GL_STATIC_DRAW);
 
         if(indexCount && indices)
         {
             if(!indexBuffer)
                 glGenBuffers(1, &indexBuffer);
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,indexBuffer);
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER,indexCount*sizeof(unsigned short),indices,GL_STATIC_DRAW);
+            if(!indexValid)
+            {
+                glBufferData(GL_ELEMENT_ARRAY_BUFFER,indexCount*sizeof(unsigned short),indices,GL_STATIC_DRAW);
+                indexValid = true;
+            }
         }
         else
         {

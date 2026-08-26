@@ -209,6 +209,12 @@ protected:
 	
     friend class tPrimGroupLoader;	
     SkinVertex* mVertices;
+    // GLES has no hardware-skinning extension.  Keep the palette used for the
+    // current VBO so a second render pass (notably the near CSM pass) can draw
+    // the already-skinned vertices instead of doing the same CPU work again.
+    rmt::Matrix* mCachedMatrixPalette;
+    unsigned mCachedMatrixCount;
+    bool mSkinCacheValid;
 };
 #endif
 //-------------------------------------------------------------------

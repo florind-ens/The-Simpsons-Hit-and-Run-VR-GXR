@@ -646,7 +646,9 @@ bool tPrimGroupSkinnedStreamed::SetVertices(unsigned start, unsigned count, rmt:
 //--------------------------------pure3d skin for PC--------------------------------
 #ifndef RAD_PS2
 tPrimGroupSkinnedPC::tPrimGroupSkinnedPC(int nVertex, unsigned format, int nIndex, bool allocate)  :
-    tPrimGroupSkinnedOptimised(nVertex), mVertices( NULL )
+	tPrimGroupSkinnedOptimised(nVertex), mVertices( NULL ),
+    mCachedMatrixPalette( NULL ), mCachedMatrixCount( 0 ),
+    mSkinCacheValid( false )
 {
     if (mVertexCount > 0)
     {
@@ -658,6 +660,7 @@ tPrimGroupSkinnedPC::~tPrimGroupSkinnedPC()
 {
 	if( mVertices )
 		delete[ ] mVertices;
+    delete[] mCachedMatrixPalette;
 }
 
 bool tPrimGroupSkinnedPC::GetVertices(unsigned start, unsigned count, rmt::Vector* v)
@@ -675,6 +678,7 @@ bool tPrimGroupSkinnedPC::SetVertices(unsigned start, unsigned count, rmt::Vecto
     {
         mVertices[i].position = *v++;
     }
+    mSkinCacheValid = false;
     return true;
 }
 
@@ -687,6 +691,39 @@ void tPrimGroupSkinnedPC::Display(void)
     pglSetEnhancedMaterialMode(EnhancedMaterialMode(mShader));
 #endif
 	pddiPrimBufferStream *stream;
+
+    bool paletteChanged = !mSkinCacheValid || mCachedMatrixCount != nMatrices;
+    if(!paletteChanged)
+    {
+        for(unsigned matrix = 0; matrix < nMatrices; ++matrix)
+        {
+            if(memcmp(&mCachedMatrixPalette[matrix], matrixPalette[matrix],
+                      sizeof(rmt::Matrix)) != 0)
+            {
+                paletteChanged = true;
+                break;
+            }
+        }
+    }
+
+    if(!paletteChanged)
+    {
+        p3d::pddi->DrawPrimBuffer(mShader->GetShader(), mBuffer);
+#if defined(RAD_ANDROID)
+        pglSetEnhancedMaterialMode(gEnhancedWorldMaterials ? 1 : 0);
+#endif
+        return;
+    }
+
+    if(mCachedMatrixCount != nMatrices)
+    {
+        delete[] mCachedMatrixPalette;
+        mCachedMatrixPalette = nMatrices ? new rmt::Matrix[nMatrices] : NULL;
+        mCachedMatrixCount = nMatrices;
+    }
+    for(unsigned matrix = 0; matrix < nMatrices; ++matrix)
+        mCachedMatrixPalette[matrix] = *matrixPalette[matrix];
+    mSkinCacheValid = true;
 	
     int count = mVertexCount;
     SkinVertex *verts = mVertices;

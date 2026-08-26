@@ -220,6 +220,8 @@ protected:
     unsigned indexCount;
 
     bool valid;
+    bool indexValid;
+    bool dynamicVertexBuffer;
     GLuint vertexBuffer;
     GLuint indexBuffer;
     GLuint vertexArray;
