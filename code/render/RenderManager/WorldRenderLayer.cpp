@@ -279,6 +279,7 @@ void WorldRenderLayer::Render()
             // before WorldScene::Render because static level geometry is
             // submitted directly during the spatial-tree traversal.
             const bool enhancedMaterials=SharOpenXR::IsEnhancedMaterialsEnabled();
+            const radTime64 vrSetupStart=radTimeGetMicroseconds64();
             rmt::Vector worldSun(0.45f,1.0f,-0.30f),eyeSun;
             worldSun.Normalize();
             mpView[view]->GetCamera()->GetWorldToCameraMatrix().RotateVector(worldSun,&eyeSun);
@@ -373,6 +374,8 @@ void WorldRenderLayer::Render()
             }
             if(rearLightCount==0) rearMode=0;
             pglSetVehicleRearLights(rearMode,rearLightCount,rearPositions,rearDirections,rearColour);
+            SharOpenXR::RecordRenderSection(5,
+                (radTimeGetMicroseconds64()-vrSetupStart)/1000.0);
 #endif
 
             int i;
@@ -393,6 +396,7 @@ void WorldRenderLayer::Render()
 
             BEGIN_PROFILE( "Render WorldScene" );
 #if defined(RAD_ANDROID)
+            const radTime64 vrSceneStart=radTimeGetMicroseconds64();
             // Both eyes use the same midpoint VR culling camera. Rebuilding
             // and sorting identical visibility lists for the right eye was a
             // large single-threaded CPU cost; retain the left-eye lists and
@@ -400,6 +404,10 @@ void WorldRenderLayer::Render()
             if(!SharOpenXR::IsRightEyeRendering() || GetNumViews()>1)
 #endif
                 mpWorldScene->Render( view );
+#if defined(RAD_ANDROID)
+            SharOpenXR::RecordRenderSection(6,
+                (radTimeGetMicroseconds64()-vrSceneStart)/1000.0);
+#endif
 #ifdef DEBUGWATCH
             mDebugInnerRenderTime = radTimeGetMicroseconds()-mDebugInnerRenderTime;
 #endif
@@ -410,6 +418,7 @@ void WorldRenderLayer::Render()
             // second eye reuses their depth maps and only updates matrices.
             tCamera* shadowEyeCamera=mpView[view]->GetCamera();
             const bool csmAllowed=SharOpenXR::IsCsmEnabled();
+            const radTime64 vrCsmStart=radTimeGetMicroseconds64();
             const float casterHalfWidths[3]={24.0f,56.0f,224.0f};
             for(int cascadeIndex=0;csmAllowed && cascadeIndex<3;++cascadeIndex)
             {
@@ -458,6 +467,8 @@ void WorldRenderLayer::Render()
                         shadowEyeCamera->GetCameraToWorldMatrix());
                 }
             }
+            SharOpenXR::RecordRenderSection(10,
+                (radTimeGetMicroseconds64()-vrCsmStart)/1000.0);
 #endif
 
             //p3d::inventory->PushSection();
@@ -465,10 +476,13 @@ void WorldRenderLayer::Render()
 
 #if defined(RAD_ANDROID)
             VrEnableSunShadowReceivers(p3d::pddi,csmAllowed);
+            const radTime64 vrOpaqueStart=radTimeGetMicroseconds64();
 #endif
             mpWorldScene->RenderOpaque();
 
 #if defined(RAD_ANDROID)
+            SharOpenXR::RecordRenderSection(7,
+                (radTimeGetMicroseconds64()-vrOpaqueStart)/1000.0);
             // CSM is sampled by the normal opaque shader. Keep transparent
             // foliage, glass, particles and later UI passes on the legacy path.
             VrEnableSunShadowReceivers(p3d::pddi,false);
@@ -525,7 +539,14 @@ void WorldRenderLayer::Render()
             END_PROFILE( "Render Shadow Casters" );
 
             BEGIN_PROFILE( "RenderTranslucent" );
+#if defined(RAD_ANDROID)
+            const radTime64 vrTranslucentStart=radTimeGetMicroseconds64();
+#endif
             mpWorldScene->RenderTranslucent();
+#if defined(RAD_ANDROID)
+            SharOpenXR::RecordRenderSection(8,
+                (radTimeGetMicroseconds64()-vrTranslucentStart)/1000.0);
+#endif
             END_PROFILE( "RenderTranslucent" );
 
             BillboardQuadManager::Enable();
@@ -538,6 +559,7 @@ void WorldRenderLayer::Render()
             //eliminate the bleeding shadows.
             BEGIN_PROFILE( "Render Guts" );
 #if defined(RAD_ANDROID)
+            const radTime64 vrGutsStart=radTimeGetMicroseconds64();
             // Character shaders use PDDI_BLEND_ALPHA even when fully opaque.
             // Apply CSM during their normal skinned colour pass. Replaying a
             // second receiver pass rebuilt some level-specific skin buffers
@@ -549,6 +571,10 @@ void WorldRenderLayer::Render()
             {
                 mpGuts[i]->Display();
             }
+#if defined(RAD_ANDROID)
+            SharOpenXR::RecordRenderSection(9,
+                (radTimeGetMicroseconds64()-vrGutsStart)/1000.0);
+#endif
             END_PROFILE( "Render Guts" );
 
 #if defined(RAD_ANDROID)

@@ -169,6 +169,20 @@ struct State
     PFNGLTEXSTORAGE3DPROC TexStorage3D;
     PFNGLFRAMEBUFFERTEXTURELAYERPROC FramebufferTextureLayer;
     PFNGLGETSTRINGIPROC GetStringi;
+    PFNGLGENQUERIESEXTPROC GenQueriesEXT;
+    PFNGLBEGINQUERYEXTPROC BeginQueryEXT;
+    PFNGLENDQUERYEXTPROC EndQueryEXT;
+    PFNGLGETQUERYOBJECTUIVEXTPROC GetQueryObjectuivEXT;
+    PFNGLGETQUERYOBJECTUI64VEXTPROC GetQueryObjectui64vEXT;
+    GLuint perfQueries[4];
+    bool perfQueryPending[4],perfQueryActive,perfGpuAvailable,perfGpuChecked;
+    unsigned perfQueryIndex,perfFrames;
+    Uint64 perfFrameStart,perfRenderStart;
+    double perfWaitSum,perfRenderSum,perfSubmitSum,perfGpuLast;
+    double perfWaitMax,perfRenderMax,perfSubmitMax;
+    unsigned perfDraws,perfIndexedDraws,perfVertices,perfTriangles,perfMaterials;
+    unsigned perfUploadCalls,perfUploadBytes;
+    double perfDrawCpu,perfMaterialCpu,perfUploadCpu,perfSections[22];
     rmt::Matrix multiviewProjection[2],multiviewViewAdjustment[2];
     GLuint gtaoFramebuffer[2],gtaoTexture[2],gtaoProgram,gtaoBlurProgram,gtaoCompositeProgram,gtaoVbo;
     int gtaoWidth,gtaoHeight;
@@ -1169,6 +1183,11 @@ void PollEvents()
 
 bool BeginFrame()
 {
+    g.perfFrameStart=SDL_GetPerformanceCounter();
+    g.perfDraws=g.perfIndexedDraws=g.perfVertices=g.perfTriangles=g.perfMaterials=0;
+    g.perfUploadCalls=g.perfUploadBytes=0;
+    g.perfDrawCpu=g.perfMaterialCpu=g.perfUploadCpu=0.0;
+    for(unsigned i=0;i<22;++i) g.perfSections[i]=0.0;
     PollEvents(); if(!g.running) return false;
     if(g.renderScalePending)
     {
@@ -1199,9 +1218,58 @@ bool BeginFrame()
     }
     SyncInputActions();
     XrFrameWaitInfo wi={XR_TYPE_FRAME_WAIT_INFO}; g.frameState={XR_TYPE_FRAME_STATE};
+    const Uint64 waitStart=SDL_GetPerformanceCounter();
     if(XR_FAILED(g.WaitFrame(g.session,&wi,&g.frameState))) return false;
+    const Uint64 waitEnd=SDL_GetPerformanceCounter();
+    const double frequency=static_cast<double>(SDL_GetPerformanceFrequency());
+    const double waitMs=(waitEnd-waitStart)*1000.0/frequency;
+    g.perfWaitSum+=waitMs; g.perfWaitMax=std::max(g.perfWaitMax,waitMs);
     XrFrameBeginInfo bi={XR_TYPE_FRAME_BEGIN_INFO}; if(XR_FAILED(g.BeginFrame(g.session,&bi))) return false;
     g.frameBegun=true; g.shouldRender=g.frameState.shouldRender;
+    g.perfRenderStart=SDL_GetPerformanceCounter();
+
+    // EXT_disjoint_timer_query is asynchronous: read an older slot only when
+    // ready, never stall the render thread merely to collect telemetry.
+    if(!g.perfGpuChecked)
+    {
+        const char* extensions=reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+        g.perfGpuAvailable=extensions && strstr(extensions,"GL_EXT_disjoint_timer_query");
+        if(g.perfGpuAvailable)
+        {
+            g.GenQueriesEXT=reinterpret_cast<PFNGLGENQUERIESEXTPROC>(eglGetProcAddress("glGenQueriesEXT"));
+            g.BeginQueryEXT=reinterpret_cast<PFNGLBEGINQUERYEXTPROC>(eglGetProcAddress("glBeginQueryEXT"));
+            g.EndQueryEXT=reinterpret_cast<PFNGLENDQUERYEXTPROC>(eglGetProcAddress("glEndQueryEXT"));
+            g.GetQueryObjectuivEXT=reinterpret_cast<PFNGLGETQUERYOBJECTUIVEXTPROC>(eglGetProcAddress("glGetQueryObjectuivEXT"));
+            g.GetQueryObjectui64vEXT=reinterpret_cast<PFNGLGETQUERYOBJECTUI64VEXTPROC>(eglGetProcAddress("glGetQueryObjectui64vEXT"));
+            g.perfGpuAvailable=g.GenQueriesEXT&&g.BeginQueryEXT&&g.EndQueryEXT&&
+                g.GetQueryObjectuivEXT&&g.GetQueryObjectui64vEXT;
+            if(g.perfGpuAvailable) g.GenQueriesEXT(4,g.perfQueries);
+        }
+        XRLOG("VR PERF GPU timer: %s",g.perfGpuAvailable?"available":"unavailable");
+        g.perfGpuChecked=true;
+    }
+    g.perfQueryActive=false;
+    if(g.perfGpuAvailable)
+    {
+        const unsigned slot=g.perfQueryIndex;
+        if(g.perfQueryPending[slot])
+        {
+            GLuint ready=0; g.GetQueryObjectuivEXT(g.perfQueries[slot],GL_QUERY_RESULT_AVAILABLE_EXT,&ready);
+            if(ready)
+            {
+                GLuint64 nanoseconds=0; g.GetQueryObjectui64vEXT(g.perfQueries[slot],GL_QUERY_RESULT_EXT,&nanoseconds);
+                GLint disjoint=0; glGetIntegerv(GL_GPU_DISJOINT_EXT,&disjoint);
+                const double gpuMs=nanoseconds/1000000.0;
+                if(!disjoint && gpuMs>=0.0 && gpuMs<1000.0) g.perfGpuLast=gpuMs;
+                g.perfQueryPending[slot]=false;
+            }
+        }
+        if(!g.perfQueryPending[slot])
+        {
+            g.BeginQueryEXT(GL_TIME_ELAPSED_EXT,g.perfQueries[slot]);
+            g.perfQueryActive=true;
+        }
+    }
     if(!g.shouldRender) return true;
     XrViewLocateInfo li={XR_TYPE_VIEW_LOCATE_INFO}; li.viewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
     li.displayTime=g.frameState.predictedDisplayTime; li.space=g.space;
@@ -1323,6 +1391,26 @@ static void ApplyIrisBlackout()
     if(scissor)glEnable(GL_SCISSOR_TEST);else glDisable(GL_SCISSOR_TEST);
 }
 unsigned GetEyeCount(){ return g.shouldRender ? 2u : 0u; }
+void RecordPddiDraw(unsigned primitiveType,unsigned vertexCount,bool indexed,double cpuMilliseconds)
+{
+    ++g.perfDraws; if(indexed) ++g.perfIndexedDraws;
+    g.perfVertices+=vertexCount; g.perfDrawCpu+=cpuMilliseconds;
+    if(primitiveType==0) g.perfTriangles+=vertexCount/3;
+    else if(primitiveType==1 && vertexCount>=3) g.perfTriangles+=vertexCount-2;
+}
+void RecordPddiMaterial(bool changed,double cpuMilliseconds)
+{
+    if(changed) ++g.perfMaterials;
+    g.perfMaterialCpu+=cpuMilliseconds;
+}
+void RecordPddiUpload(unsigned bytes,double cpuMilliseconds)
+{
+    ++g.perfUploadCalls; g.perfUploadBytes+=bytes; g.perfUploadCpu+=cpuMilliseconds;
+}
+void RecordRenderSection(unsigned section,double cpuMilliseconds)
+{
+    if(section<22) g.perfSections[section]+=cpuMilliseconds;
+}
 bool IsMultiviewAvailable(){return g.multiviewAvailable;}
 // This is queried from the material hot path. The renderer exclusively owns
 // multiviewRendering, so asking the GL driver for its framebuffer binding on
@@ -1897,7 +1985,14 @@ void UpdateMissionHudLayout(unsigned slot,const rmt::Matrix& layout)
     {
         g.missionHudLayout[slot]=layout;
         g.missionHudLayoutValid[slot]=true;
-        g.missionHudCropValid[slot]=false;
+        // The layout matrix places the already captured HUD plane in VR; it
+        // does not change the drawable's pixel bounds inside its offscreen
+        // texture.  Animated groups commonly change this matrix every frame.
+        // Invalidating the crop here therefore forced EndMissionHudCapture to
+        // glReadPixels the complete texture every frame, synchronizing CPU and
+        // GPU for roughly 10-13 ms on Quest.  Pixel bounds are invalidated by
+        // an actual authored rectangle change in BeginMissionHudCapture and
+        // by ResetMissionHudSlot instead.
     }
 }
 
@@ -2706,12 +2801,45 @@ bool GetActiveUiHorizontalOffset(float* offset)
 void EndFrame()
 {
     if(!g.frameBegun)return; glBindFramebuffer(GL_FRAMEBUFFER,0);
+    if(g.perfQueryActive)
+    {
+        g.EndQueryEXT(GL_TIME_ELAPSED_EXT);
+        g.perfQueryPending[g.perfQueryIndex]=true;
+        g.perfQueryIndex=(g.perfQueryIndex+1)%4;
+        g.perfQueryActive=false;
+    }
+    const Uint64 renderEnd=SDL_GetPerformanceCounter();
     XrCompositionLayerProjectionView pv[2]={{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     for(unsigned i=0;i<2;++i){ pv[i].pose=g.eyes[i].view.pose; pv[i].fov=g.eyes[i].view.fov; pv[i].subImage.swapchain=g.eyes[0].swapchain; pv[i].subImage.imageRect.extent.width=g.eyes[i].width; pv[i].subImage.imageRect.extent.height=g.eyes[i].height; pv[i].subImage.imageArrayIndex=i; }
     XrCompositionLayerProjection layer={XR_TYPE_COMPOSITION_LAYER_PROJECTION}; layer.space=g.space; layer.viewCount=2; layer.views=pv;
     const XrCompositionLayerBaseHeader* layers[]={reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer)};
     XrFrameEndInfo ei={XR_TYPE_FRAME_END_INFO}; ei.displayTime=g.frameState.predictedDisplayTime; ei.environmentBlendMode=XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-    ei.layerCount=g.shouldRender?1:0; ei.layers=g.shouldRender?layers:NULL; g.EndFrame(g.session,&ei); g.frameBegun=false;
+    ei.layerCount=g.shouldRender?1:0; ei.layers=g.shouldRender?layers:NULL;
+    const Uint64 submitStart=SDL_GetPerformanceCounter();
+    g.EndFrame(g.session,&ei);
+    const Uint64 submitEnd=SDL_GetPerformanceCounter();
+    const double frequency=static_cast<double>(SDL_GetPerformanceFrequency());
+    const double renderMs=(renderEnd-g.perfRenderStart)*1000.0/frequency;
+    const double submitMs=(submitEnd-submitStart)*1000.0/frequency;
+    g.perfRenderSum+=renderMs; g.perfSubmitSum+=submitMs;
+    g.perfRenderMax=std::max(g.perfRenderMax,renderMs);
+    g.perfSubmitMax=std::max(g.perfSubmitMax,submitMs);
+    ++g.perfFrames;
+    if(g.perfFrames>=72)
+    {
+        XRLOG("VR PERF: wait %.2f/%.2f render %.2f/%.2f submit %.2f/%.2f GPU %.2f | draw %u idx %u vert %u tri %u drawCPU %.2f | mat %u/%.2f upload %u/%uKB/%.2f | layer gui %.2f pres %.2f level %.2f missions %.2f | world setup %.2f scene %.2f opaque %.2f trans %.2f guts %.2f CSM %.2f misc %.2f skin %.2f",
+              g.perfWaitSum/g.perfFrames,g.perfWaitMax,
+              g.perfRenderSum/g.perfFrames,g.perfRenderMax,
+              g.perfSubmitSum/g.perfFrames,g.perfSubmitMax,g.perfGpuLast,
+              g.perfDraws,g.perfIndexedDraws,g.perfVertices,g.perfTriangles,g.perfDrawCpu,
+              g.perfMaterials,g.perfMaterialCpu,g.perfUploadCalls,g.perfUploadBytes/1024,g.perfUploadCpu,
+              g.perfSections[0],g.perfSections[1],g.perfSections[2],g.perfSections[3]+g.perfSections[4],
+              g.perfSections[5],g.perfSections[6],g.perfSections[7],g.perfSections[8],
+              g.perfSections[9],g.perfSections[10],g.perfSections[11],g.perfSections[12]);
+        g.perfFrames=0; g.perfWaitSum=g.perfRenderSum=g.perfSubmitSum=0.0;
+        g.perfWaitMax=g.perfRenderMax=g.perfSubmitMax=0.0;
+    }
+    g.frameBegun=false;
 }
 }
 #endif

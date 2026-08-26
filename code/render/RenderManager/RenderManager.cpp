@@ -937,7 +937,14 @@ void RenderManager::ContextUpdate( unsigned int iElapsedTime )
             }
 #endif
             BEGIN_PROFILE("Layers");
+#if defined(RAD_ANDROID)
+            const radTime64 vrLayerStart=radTimeGetMicroseconds64();
+#endif
             pLayer->Render();
+#if defined(RAD_ANDROID)
+            SharOpenXR::RecordRenderSection(static_cast<unsigned>(i),
+                (radTimeGetMicroseconds64()-vrLayerStart)/1000.0);
+#endif
             END_PROFILE("Layers");
 #if defined(RAD_ANDROID)
             if (eyeActive || multiviewActive)
@@ -981,6 +988,9 @@ void RenderManager::ContextUpdate( unsigned int iElapsedTime )
 
             if(guiLayer && guiLayer->IsRenderReady())
             {
+#if defined(RAD_ANDROID)
+                const radTime64 vrGuiStart=radTimeGetMicroseconds64();
+#endif
                 rmt::Matrix originalGuiCameras[MAX_PLAYERS];
                 bool changedGuiCameras[MAX_PLAYERS]={false};
                 for(unsigned int view=0;view<guiLayer->GetNumViews();++view)
@@ -996,6 +1006,10 @@ void RenderManager::ContextUpdate( unsigned int iElapsedTime )
                     }
                 }
                 guiLayer->Render();
+#if defined(RAD_ANDROID)
+                SharOpenXR::RecordRenderSection(0,
+                    (radTimeGetMicroseconds64()-vrGuiStart)/1000.0);
+#endif
                 for(unsigned int view=0;view<guiLayer->GetNumViews();++view)
                     if(changedGuiCameras[view] && guiLayer->pCam(view))
                         guiLayer->pCam(view)->SetCameraMatrix(&originalGuiCameras[view]);

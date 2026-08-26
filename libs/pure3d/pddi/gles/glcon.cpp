@@ -24,6 +24,10 @@
 
 #if defined(RAD_ANDROID)
 int gPglCsmBillboardMode=0; // 0 normal, 1 caster, 2 receiver overlay
+static double PglTelemetryMilliseconds()
+{
+    return SDL_GetPerformanceCounter()*1000.0/SDL_GetPerformanceFrequency();
+}
 #endif
 
 // vertex arrays rendering
@@ -82,6 +86,9 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
     display = disp;
     currentProgram = nullptr;
 #if defined(RAD_ANDROID)
+    legacyColorProgram=NULL;
+    legacyTextureProgram=NULL;
+    legacyAlphaTestProgram=NULL;
     shadowDepthProgram=NULL;
     shadowOverlayProgram=NULL;
     particleTextureProgram=NULL;
@@ -325,10 +332,10 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
     );
 
 #define PGL_CSM_FRAGMENT \
-        "uniform int shadowEnabled; uniform sampler2D shadowTex; uniform sampler2D shadowTex1; uniform sampler2D shadowTex2; uniform float shadowTexelSize; uniform float shadowTexelSize1; uniform float shadowTexelSize2; varying vec4 shadowCoord0; varying vec4 shadowCoord1; varying vec4 shadowCoord2; varying float shadowViewDistance;\n" \
-        "float csmC0(vec2 u,float d){return d-0.00018>texture2D(shadowTex,u).r?1.0:0.0;} float csmC1(vec2 u,float d){return d-0.00018>texture2D(shadowTex1,u).r?1.0:0.0;} float csmC2(vec2 u,float d){return d-0.00018>texture2D(shadowTex2,u).r?1.0:0.0;}\n" \
-        "float csmS0(vec3 p){vec2 q=p.xy/shadowTexelSize-0.5,f=fract(q),b=(floor(q)+0.5)*shadowTexelSize;return mix(mix(csmC0(b,p.z),csmC0(b+vec2(shadowTexelSize,0.0),p.z),f.x),mix(csmC0(b+vec2(0.0,shadowTexelSize),p.z),csmC0(b+vec2(shadowTexelSize),p.z),f.x),f.y);} float csmS1(vec3 p){vec2 q=p.xy/shadowTexelSize1-0.5,f=fract(q),b=(floor(q)+0.5)*shadowTexelSize1;return mix(mix(csmC1(b,p.z),csmC1(b+vec2(shadowTexelSize1,0.0),p.z),f.x),mix(csmC1(b+vec2(0.0,shadowTexelSize1),p.z),csmC1(b+vec2(shadowTexelSize1),p.z),f.x),f.y);} float csmS2(vec3 p){vec2 q=p.xy/shadowTexelSize2-0.5,f=fract(q),b=(floor(q)+0.5)*shadowTexelSize2;return mix(mix(csmC2(b,p.z),csmC2(b+vec2(shadowTexelSize2,0.0),p.z),f.x),mix(csmC2(b+vec2(0.0,shadowTexelSize2),p.z),csmC2(b+vec2(shadowTexelSize2),p.z),f.x),f.y);}\n" \
-        "bool csmValid(vec3 p){return p.x>0.001&&p.x<0.999&&p.y>0.001&&p.y<0.999&&p.z>0.0&&p.z<1.0;} float csmShadow(){if(shadowEnabled==0)return 0.0;if(shadowViewDistance<24.0){vec3 p0=shadowCoord0.xyz/shadowCoord0.w*0.5+0.5,p1=shadowCoord1.xyz/shadowCoord1.w*0.5+0.5;float s0=csmValid(p0)?csmS0(p0):0.0,s1=csmValid(p1)?csmS1(p1):0.0;return shadowViewDistance<20.0?max(s0,s1):mix(max(s0,s1),s1,(shadowViewDistance-20.0)*0.25);}vec3 p1=shadowCoord1.xyz/shadowCoord1.w*0.5+0.5;float s1=csmValid(p1)?csmS1(p1):0.0;if(shadowViewDistance<50.0)return s1;vec3 p2=shadowCoord2.xyz/shadowCoord2.w*0.5+0.5;float s2=csmValid(p2)?csmS2(p2):0.0;if(shadowViewDistance<56.0)return mix(s1,s2,(shadowViewDistance-50.0)/6.0);return s2;}\n"
+        "uniform int shadowEnabled; uniform sampler2D shadowTex; uniform sampler2D shadowTex1; uniform sampler2D shadowTex2; uniform highp float shadowTexelSize; uniform highp float shadowTexelSize1; uniform highp float shadowTexelSize2; varying highp vec4 shadowCoord0; varying highp vec4 shadowCoord1; varying highp vec4 shadowCoord2; varying highp float shadowViewDistance;\n" \
+        "highp float csmC0(highp vec2 u,highp float d){return d-0.00018>texture2D(shadowTex,u).r?1.0:0.0;} highp float csmC1(highp vec2 u,highp float d){return d-0.00018>texture2D(shadowTex1,u).r?1.0:0.0;} highp float csmC2(highp vec2 u,highp float d){return d-0.00018>texture2D(shadowTex2,u).r?1.0:0.0;}\n" \
+        "highp float csmS0(highp vec3 p){highp vec2 q=p.xy/shadowTexelSize-0.5,f=fract(q),b=(floor(q)+0.5)*shadowTexelSize;return mix(mix(csmC0(b,p.z),csmC0(b+vec2(shadowTexelSize,0.0),p.z),f.x),mix(csmC0(b+vec2(0.0,shadowTexelSize),p.z),csmC0(b+vec2(shadowTexelSize),p.z),f.x),f.y);} highp float csmS1(highp vec3 p){highp vec2 q=p.xy/shadowTexelSize1-0.5,f=fract(q),b=(floor(q)+0.5)*shadowTexelSize1;return mix(mix(csmC1(b,p.z),csmC1(b+vec2(shadowTexelSize1,0.0),p.z),f.x),mix(csmC1(b+vec2(0.0,shadowTexelSize1),p.z),csmC1(b+vec2(shadowTexelSize1),p.z),f.x),f.y);} highp float csmS2(highp vec3 p){highp vec2 q=p.xy/shadowTexelSize2-0.5,f=fract(q),b=(floor(q)+0.5)*shadowTexelSize2;return mix(mix(csmC2(b,p.z),csmC2(b+vec2(shadowTexelSize2,0.0),p.z),f.x),mix(csmC2(b+vec2(0.0,shadowTexelSize2),p.z),csmC2(b+vec2(shadowTexelSize2),p.z),f.x),f.y);}\n" \
+        "bool csmValid(highp vec3 p){return p.x>0.001&&p.x<0.999&&p.y>0.001&&p.y<0.999&&p.z>0.0&&p.z<1.0;} highp float csmShadow(){if(shadowEnabled==0)return 0.0;if(shadowViewDistance<24.0){highp vec3 p0=shadowCoord0.xyz/shadowCoord0.w*0.5+0.5,p1=shadowCoord1.xyz/shadowCoord1.w*0.5+0.5;highp float s0=csmValid(p0)?csmS0(p0):0.0,s1=csmValid(p1)?csmS1(p1):0.0;return shadowViewDistance<20.0?max(s0,s1):mix(max(s0,s1),s1,(shadowViewDistance-20.0)*0.25);}highp vec3 p1=shadowCoord1.xyz/shadowCoord1.w*0.5+0.5;highp float s1=csmValid(p1)?csmS1(p1):0.0;if(shadowViewDistance<50.0)return s1;highp vec3 p2=shadowCoord2.xyz/shadowCoord2.w*0.5+0.5;highp float s2=csmValid(p2)?csmS2(p2):0.0;if(shadowViewDistance<56.0)return mix(s1,s2,(shadowViewDistance-50.0)/6.0);return s2;}\n"
 
 #define PGL_PIXEL_LIGHTING \
         "varying float pixelLit;\n" \
@@ -342,7 +349,7 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
         "varying vec2 tc;\n"
         "varying vec4 cpri;\n"
         "varying vec4 csec;\n"
-        "varying vec3 paintNormal; varying vec3 paintPosition; varying float paintEnabled;\n"
+        "varying vec3 paintNormal; varying highp vec3 paintPosition; varying float paintEnabled;\n"
         "uniform struct LightParams { int enabled; vec4 position; vec4 colour; vec3 attenuation; } lights[" PDDI_STRINGIZE(PDDI_MAX_LIGHTS) "];\n"
         "uniform vec4 acs; uniform vec4 acm; uniform vec4 dcm; uniform vec4 ecm; uniform vec4 scm; uniform float srm; uniform vec3 enhancedSunDirection;\n"
         PGL_CSM_FRAGMENT
@@ -365,7 +372,7 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
         "varying vec2 tc;\n"
         "varying vec4 cpri;\n"
         "varying vec4 csec;\n"
-        "varying vec3 paintNormal; varying vec3 paintPosition; varying float paintEnabled;\n"
+        "varying vec3 paintNormal; varying highp vec3 paintPosition; varying float paintEnabled;\n"
         "uniform struct LightParams { int enabled; vec4 position; vec4 colour; vec3 attenuation; } lights[" PDDI_STRINGIZE(PDDI_MAX_LIGHTS) "];\n"
         "uniform vec4 acs; uniform vec4 acm; uniform vec4 dcm; uniform vec4 ecm; uniform vec4 scm; uniform float srm; uniform vec3 enhancedSunDirection;\n"
         PGL_CSM_FRAGMENT
@@ -391,7 +398,7 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
         "varying vec2 tc;\n"
         "varying vec4 cpri;\n"
         "varying vec4 csec;\n"
-        "varying vec3 paintNormal; varying vec3 paintPosition; varying float paintEnabled;\n"
+        "varying vec3 paintNormal; varying highp vec3 paintPosition; varying float paintEnabled;\n"
         "uniform struct LightParams { int enabled; vec4 position; vec4 colour; vec3 attenuation; } lights[" PDDI_STRINGIZE(PDDI_MAX_LIGHTS) "];\n"
         "uniform vec4 acs; uniform vec4 acm; uniform vec4 dcm; uniform vec4 ecm; uniform vec4 scm; uniform float srm; uniform vec3 enhancedSunDirection;\n"
         PGL_CSM_FRAGMENT
@@ -414,6 +421,32 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
         "    gl_FragColor = c;\n"
         "}\n"
     );
+
+    // The feature-rich programs above preserve CSM, enhanced materials and
+    // local vehicle lights.  Uniform branches are not a free substitute for
+    // small shaders on tiled mobile GPUs: their varyings and register pressure
+    // remain even when every feature is disabled.  These variants reproduce
+    // the exact legacy colour path and are selected only when a draw needs none
+    // of those optional features.
+    GLuint legacyColorFS=pglProgram::CompileShader(GL_FRAGMENT_SHADER,
+        // Source and framebuffer colours are 8-bit, so mediump retains the
+        // output while reducing fragment ALU cost for close, screen-filling
+        // cars and state props in both eye buffers.
+        "precision mediump float;\n"
+        "varying vec4 cpri; varying vec4 csec;\n"
+        "void main(){vec4 c=cpri+csec;float l=dot(c.rgb,vec3(0.2126,0.7152,0.0722));"
+        "c.rgb=clamp(mix(vec3(l),c.rgb,1.25),0.0,1.0);c.rgb*=c.rgb;gl_FragColor=c;}\n");
+    GLuint legacyTextureFS=pglProgram::CompileShader(GL_FRAGMENT_SHADER,
+        "precision mediump float;\n"
+        "varying vec2 tc; varying vec4 cpri; varying vec4 csec; uniform sampler2D tex;\n"
+        "void main(){vec4 c=texture2D(tex,tc)*cpri+csec;float l=dot(c.rgb,vec3(0.2126,0.7152,0.0722));"
+        "c.rgb=clamp(mix(vec3(l),c.rgb,1.25),0.0,1.0);c.rgb*=c.rgb;gl_FragColor=c;}\n");
+    GLuint legacyAlphaFS=pglProgram::CompileShader(GL_FRAGMENT_SHADER,
+        "precision mediump float;\n"
+        "varying vec2 tc; varying vec4 cpri; varying vec4 csec; uniform sampler2D tex; uniform float alpharef;\n"
+        "void main(){vec4 c=texture2D(tex,tc)*cpri+csec;if(c.a<alpharef)discard;"
+        "float l=dot(c.rgb,vec3(0.2126,0.7152,0.0722));c.rgb=clamp(mix(vec3(l),c.rgb,1.25),0.0,1.0);"
+        "c.rgb*=c.rgb;gl_FragColor=c;}\n");
 #undef PGL_PIXEL_LIGHTING
 #undef PGL_CSM_FRAGMENT
 #endif
@@ -424,6 +457,9 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
 
     alphaTestProgram = pglProgram::CreateProgram(vertexShader, alphaTestShader);
 #if defined(RAD_ANDROID)
+    legacyColorProgram=pglProgram::CreateProgram(vertexShader,legacyColorFS);
+    legacyTextureProgram=pglProgram::CreateProgram(vertexShader,legacyTextureFS);
+    legacyAlphaTestProgram=pglProgram::CreateProgram(vertexShader,legacyAlphaFS);
     // Alpha-blended effects never receive CSM or enhanced-material lighting.
     // Keeping their fragment stage free of those large dynamic branches is
     // essential for smoke, whose overlapping sprites are fill-rate bound.
@@ -431,6 +467,9 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
         "precision mediump float; varying vec2 tc; varying vec4 cpri; varying vec4 csec; uniform sampler2D tex; void main(){vec4 c=texture2D(tex,tc)*cpri+csec;if(c.a<=0.003921569)discard;gl_FragColor=c;}");
     particleTextureProgram=pglProgram::CreateProgram(vertexShader,particleFS);
     glDeleteShader(particleFS);
+    glDeleteShader(legacyColorFS);
+    glDeleteShader(legacyTextureFS);
+    glDeleteShader(legacyAlphaFS);
 
     GLuint shadowVS=pglProgram::CompileShader(GL_VERTEX_SHADER,
         "precision highp float; attribute vec3 position; attribute vec2 texcoord; uniform mat4 projection; uniform mat4 modelview; uniform int vehicleDentCount; uniform vec4 vehicleDents[4]; varying vec2 tc; vec3 deform(vec3 p){for(int i=0;i<4;++i){if(i>=vehicleDentCount)break;vec4 d=vehicleDents[i];float r=1.20+d.w*0.65,f=max(0.0,1.0-length(p-d.xyz)/r);f=f*f*(3.0-2.0*f);p+=normalize(-d.xyz+vec3(0.0,0.20,0.0))*(d.w*f);}return p;} void main(){tc=texcoord;gl_Position=projection*modelview*vec4(deform(position),1.0);}");
@@ -474,6 +513,9 @@ pglContext::~pglContext()
     if(shadowDepthProgram) shadowDepthProgram->Release();
     if(shadowOverlayProgram) shadowOverlayProgram->Release();
     if(particleTextureProgram) particleTextureProgram->Release();
+    if(legacyColorProgram) legacyColorProgram->Release();
+    if(legacyTextureProgram) legacyTextureProgram->Release();
+    if(legacyAlphaTestProgram) legacyAlphaTestProgram->Release();
 #endif
     defaultShader->Release();
     currentProgram->Release();
@@ -869,8 +911,15 @@ pddiPrimStream* pglContext::BeginPrims(pddiShader* mat, pddiPrimType primType, u
 
     pddiBaseContext::BeginPrims(mat, primType, vertexType, vertexCount);
     pddiBaseShader* material = (pddiBaseShader*)mat;
-    ADD_STAT( PDDI_STAT_MATERIAL_OPS, !material->IsCurrent() );
+    const bool materialChanged=!material->IsCurrent();
+    ADD_STAT(PDDI_STAT_MATERIAL_OPS,materialChanged);
+#if defined(RAD_ANDROID)
+    const double materialStart=PglTelemetryMilliseconds();
+#endif
     material->SetMaterial();
+#if defined(RAD_ANDROID)
+    SharOpenXR::RecordPddiMaterial(materialChanged,PglTelemetryMilliseconds()-materialStart);
+#endif
     thePrimStream.primitive = primTypeTable[primType];
     thePrimStream.vertexType = vertexType;
     return &thePrimStream;
@@ -924,8 +973,15 @@ void pglContext::EndPrims(pddiPrimStream* stream)
 
 #if defined(RAD_ANDROID)
     if(SharOpenXR::PrepareRadarDraw) SharOpenXR::PrepareRadarDraw();
+    const double drawStart=PglTelemetryMilliseconds();
 #endif
     glDrawArrays( glstream->primitive, 0, glstream->coords.size() );
+#if defined(RAD_ANDROID)
+    const unsigned primitiveType=glstream->primitive==GL_TRIANGLES?0:
+        glstream->primitive==GL_TRIANGLE_STRIP?1:4;
+    SharOpenXR::RecordPddiDraw(primitiveType,glstream->coords.size(),false,
+                               PglTelemetryMilliseconds()-drawStart);
+#endif
 
     glstream->coords.clear();
     glstream->normals.clear();
@@ -1209,8 +1265,14 @@ void pglPrimBuffer::Display(void)
         if(!vertexBuffer)
             glGenBuffers(1, &vertexBuffer);
         glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
+#if defined(RAD_ANDROID)
+        const double vertexUploadStart=PglTelemetryMilliseconds();
+#endif
         glBufferData(GL_ARRAY_BUFFER, mem, buffer,
                      dynamicVertexBuffer ? GL_STREAM_DRAW : GL_STATIC_DRAW);
+#if defined(RAD_ANDROID)
+        SharOpenXR::RecordPddiUpload(mem,PglTelemetryMilliseconds()-vertexUploadStart);
+#endif
 
         if(indexCount && indices)
         {
@@ -1219,7 +1281,14 @@ void pglPrimBuffer::Display(void)
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,indexBuffer);
             if(!indexValid)
             {
+#if defined(RAD_ANDROID)
+                const double indexUploadStart=PglTelemetryMilliseconds();
+#endif
                 glBufferData(GL_ELEMENT_ARRAY_BUFFER,indexCount*sizeof(unsigned short),indices,GL_STATIC_DRAW);
+#if defined(RAD_ANDROID)
+                SharOpenXR::RecordPddiUpload(indexCount*sizeof(unsigned short),
+                    PglTelemetryMilliseconds()-indexUploadStart);
+#endif
                 indexValid = true;
             }
         }
@@ -1279,15 +1348,25 @@ void pglPrimBuffer::Display(void)
     {
 #if defined(RAD_ANDROID)
         if(SharOpenXR::PrepareRadarDraw) SharOpenXR::PrepareRadarDraw();
+        const double drawStart=PglTelemetryMilliseconds();
 #endif
         glDrawElements(primTypeTable[primType],indexCount,GL_UNSIGNED_SHORT,0);
+#if defined(RAD_ANDROID)
+        SharOpenXR::RecordPddiDraw(static_cast<unsigned>(primType),indexCount,true,
+                                   PglTelemetryMilliseconds()-drawStart);
+#endif
     }
     else
     {
 #if defined(RAD_ANDROID)
         if(SharOpenXR::PrepareRadarDraw) SharOpenXR::PrepareRadarDraw();
+        const double drawStart=PglTelemetryMilliseconds();
 #endif
         glDrawArrays(primTypeTable[primType], 0, total);
+#if defined(RAD_ANDROID)
+        SharOpenXR::RecordPddiDraw(static_cast<unsigned>(primType),total,false,
+                                   PglTelemetryMilliseconds()-drawStart);
+#endif
     }
 }
 
@@ -1310,9 +1389,14 @@ void pglContext::DrawPrimBuffer(pddiShader* mat, pddiPrimBuffer* buffer)
         mat = defaultShader;
 
     pddiBaseShader* material = (pddiBaseShader*)mat;
-    ADD_STAT(PDDI_STAT_MATERIAL_OPS, !material->IsCurrent());
+    const bool materialChanged=!material->IsCurrent();
+    ADD_STAT(PDDI_STAT_MATERIAL_OPS,materialChanged);
+#if defined(RAD_ANDROID)
+    const double materialStart=PglTelemetryMilliseconds();
+#endif
     material->SetMaterial();
 #if defined(RAD_ANDROID)
+    SharOpenXR::RecordPddiMaterial(materialChanged,PglTelemetryMilliseconds()-materialStart);
     // Some level-specific materials restore their normal GLES program/state
     // from SetMaterial. During a CSM caster replay that can leak packed depth
     // geometry into the eye target as long coloured strips. The shadow pass
@@ -1630,12 +1714,34 @@ void pglContext::SetTextureEnvironment(const pglTextureEnv* texEnv)
         return;
     }
 #endif
+    const bool useLegacyProgram=!shadowReceiverEnabled &&
+                                pglGetEnhancedMaterialMode()==0 &&
+                                pglGetVehicleRearLightMode()==0;
     if(texEnv->texture)
-        SetShaderProgram(pglIsParticleRendering() && !texEnv->alphaTest ?
-                         particleTextureProgram :
-                         (texEnv->alphaTest?alphaTestProgram:textureProgram));
+    {
+        if(pglIsParticleRendering() && !texEnv->alphaTest)
+            SetShaderProgram(particleTextureProgram);
+        else if(useLegacyProgram)
+            SetShaderProgram(texEnv->alphaTest?legacyAlphaTestProgram:
+                                               legacyTextureProgram);
+        else
+            SetShaderProgram(texEnv->alphaTest?alphaTestProgram:textureProgram);
+    }
     else
-        SetShaderProgram(colorProgram);
+        SetShaderProgram(useLegacyProgram?legacyColorProgram:colorProgram);
+    if(!currentProgram)
+    {
+        // A shader compiler failure must never turn into a null dereference
+        // while streaming level geometry. Compile/link diagnostics above are
+        // sufficient to identify the rejected variant.
+        static bool loggedMissingProgram=false;
+        if(!loggedMissingProgram)
+        {
+            SDL_Log("PDDI: skipping draw because its shader program is unavailable");
+            loggedMissingProgram=true;
+        }
+        return;
+    }
     currentProgram->SetTextureEnvironment(texEnv);
 }
 

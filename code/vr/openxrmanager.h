@@ -107,6 +107,11 @@ namespace SharOpenXR
                                 rmt::Matrix* controllerToWorld);
     bool GetControllerLocalPose(unsigned hand, rmt::Matrix* controllerPose);
     void RenderControllerHands(tCamera* baseCamera);
+    void RecordPddiDraw(unsigned primitiveType,unsigned vertexCount,bool indexed,
+                        double cpuMilliseconds);
+    void RecordPddiMaterial(bool changed,double cpuMilliseconds);
+    void RecordPddiUpload(unsigned bytes,double cpuMilliseconds);
+    void RecordRenderSection(unsigned section,double cpuMilliseconds);
     void EndFrame();
 
     // Queried by the GLES PDDI backend whenever a view changes projection.

@@ -119,6 +119,9 @@ protected:
     pglProgram* alphaTestProgram;
     pglProgram* currentProgram;
 #if defined(RAD_ANDROID)
+    pglProgram* legacyColorProgram;
+    pglProgram* legacyTextureProgram;
+    pglProgram* legacyAlphaTestProgram;
     pglProgram* shadowDepthProgram;
     pglProgram* shadowOverlayProgram;
     pglProgram* particleTextureProgram;

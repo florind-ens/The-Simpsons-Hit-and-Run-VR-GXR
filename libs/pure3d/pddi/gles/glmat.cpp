@@ -306,14 +306,10 @@ void pglMat::SetDevPass(unsigned pass)
 #endif
         texEnv[i].texture->SetGLState();
 
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filterMagTable[texEnv[i].filterMode]);
         const bool hasMipmaps=texEnv[i].texture->GetNumMipMaps()>0;
         const bool wantsMipmaps=texEnv[i].filterMode>=PDDI_FILTER_MIPMAP;
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,
-            hasMipmaps && wantsMipmaps ? filterMinTable[texEnv[i].filterMode] :
-            filterMinTable[texEnv[i].filterMode==PDDI_FILTER_NONE ? PDDI_FILTER_NONE : PDDI_FILTER_BILINEAR]);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, uvTable[texEnv[i].uvMode]);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, uvTable[texEnv[i].uvMode]);
+        const int minFilter=hasMipmaps && wantsMipmaps ? filterMinTable[texEnv[i].filterMode] :
+            filterMinTable[texEnv[i].filterMode==PDDI_FILTER_NONE ? PDDI_FILTER_NONE : PDDI_FILTER_BILINEAR];
 
 #if defined(RAD_ANDROID)
         // Quest exposes EXT_texture_filter_anisotropic. Limit it to 8x: this
@@ -333,8 +329,14 @@ void pglMat::SetDevPass(unsigned pass)
             }
             anisotropyChecked=true;
         }
-        glTexParameterf(GL_TEXTURE_2D,0x84FE,
-            hasMipmaps && wantsMipmaps ? anisotropy : 1.0f); // GL_TEXTURE_MAX_ANISOTROPY_EXT
+        texEnv[i].texture->SetSamplerState(filterMagTable[texEnv[i].filterMode],minFilter,
+            uvTable[texEnv[i].uvMode],uvTable[texEnv[i].uvMode],
+            hasMipmaps && wantsMipmaps ? anisotropy : 1.0f);
+#else
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,filterMagTable[texEnv[i].filterMode]);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,minFilter);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,uvTable[texEnv[i].uvMode]);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,uvTable[texEnv[i].uvMode]);
 #endif
     }
 

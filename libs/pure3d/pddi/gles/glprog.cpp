@@ -58,7 +58,42 @@ static std::map<GLuint,ShaderSource> sShaderSources;
 static bool sMultiviewProgramFailure=false;
 static void ReplaceAll(std::string& s,const std::string& from,const std::string& to)
 { for(size_t p=0;(p=s.find(from,p))!=std::string::npos;p+=to.size()) s.replace(p,from.size(),to); }
-static std::string MakeMultiviewShader(GLenum type,const std::string& legacy)
+static bool MakeHardwarePcf(std::string& s)
+{
+    if(s.find("uniform sampler2D shadowTex;")==std::string::npos) return false;
+    ReplaceAll(s,"uniform sampler2D shadowTex;","uniform highp sampler2DShadow shadowTex;");
+    ReplaceAll(s,"uniform sampler2D shadowTex1;","uniform highp sampler2DShadow shadowTex1;");
+    ReplaceAll(s,"uniform sampler2D shadowTex2;","uniform highp sampler2DShadow shadowTex2;");
+
+    // Replace the complete manual 4-fetch bilinear helpers. A linearly
+    // filtered comparison sampler performs the same 2x2 PCF in one lookup.
+    size_t begin=s.find("highp float csmC0(");
+    size_t end=s.find("bool csmValid(",begin);
+    if(begin!=std::string::npos && end!=std::string::npos)
+    {
+        s.replace(begin,end-begin,
+            "highp float csmC0(highp vec2 u,highp float d){return texture(shadowTex,vec3(u,d-0.00018));} "
+            "highp float csmC1(highp vec2 u,highp float d){return texture(shadowTex1,vec3(u,d-0.00018));} "
+            "highp float csmC2(highp vec2 u,highp float d){return texture(shadowTex2,vec3(u,d-0.00018));} "
+            "highp float csmS0(highp vec3 p){return csmC0(p.xy,p.z);} "
+            "highp float csmS1(highp vec3 p){return csmC1(p.xy,p.z);} "
+            "highp float csmS2(highp vec3 p){return csmC2(p.xy,p.z);} ");
+        return true;
+    }
+    begin=s.find("float c0(");
+    end=s.find("bool valid(",begin);
+    if(begin!=std::string::npos && end!=std::string::npos)
+    {
+        s.replace(begin,end-begin,
+            "float s0(vec3 p){return texture(shadowTex,vec3(p.xy,p.z-0.00018));} "
+            "float s1(vec3 p){return texture(shadowTex1,vec3(p.xy,p.z-0.00018));} "
+            "float s2(vec3 p){return texture(shadowTex2,vec3(p.xy,p.z-0.00018));} ");
+        return true;
+    }
+    return false;
+}
+static std::string MakeMultiviewShader(GLenum type,const std::string& legacy,
+                                       bool hardwarePcf)
 {
     std::string s="#version 320 es\n";
     if(type==GL_VERTEX_SHADER) s+="#extension GL_OVR_multiview2 : require\n";
@@ -66,6 +101,7 @@ static std::string MakeMultiviewShader(GLenum type,const std::string& legacy)
     if(type==GL_VERTEX_SHADER) s+="layout(num_views=2) in;\n";
     else s+="layout(location=0) out vec4 pglFragColor;\n";
     s+=legacy; ReplaceAll(s,"attribute ","in "); ReplaceAll(s,"texture2D(","texture(");
+    if(type==GL_FRAGMENT_SHADER && hardwarePcf) MakeHardwarePcf(s);
     if(type==GL_VERTEX_SHADER)
     {
         ReplaceAll(s,"varying ","out ");
@@ -78,9 +114,10 @@ static std::string MakeMultiviewShader(GLenum type,const std::string& legacy)
     else { ReplaceAll(s,"varying ","in "); ReplaceAll(s,"gl_FragColor","pglFragColor"); }
     return s;
 }
-static GLuint CompileMultiviewShader(GLenum type,const std::string& legacy)
+static GLuint CompileMultiviewShader(GLenum type,const std::string& legacy,
+                                     bool hardwarePcf)
 {
-    const std::string source=MakeMultiviewShader(type,legacy); const char* text=source.c_str();
+    const std::string source=MakeMultiviewShader(type,legacy,hardwarePcf); const char* text=source.c_str();
     GLuint shader=glCreateShader(type); glShaderSource(shader,1,&text,0); glCompileShader(shader);
     GLint ok=0; glGetShaderiv(shader,GL_COMPILE_STATUS,&ok); if(ok)return shader;
     GLint n=0;glGetShaderiv(shader,GL_INFO_LOG_LENGTH,&n);std::vector<GLchar> log(n>0?n:1);glGetShaderInfoLog(shader,n,&n,log.data());
@@ -100,6 +137,7 @@ pglProgram::pglProgram()
 #ifdef RAD_ANDROID
     multiviewProgram=0;
     usingMultiviewProgram=false;
+    multiviewHardwarePcf=false;
     vrProjection=vrViewAdjustment=-1;
 #endif
     projection = modelview = normalmatrix = alpharef = sampler = acs = -1;
@@ -355,6 +393,41 @@ void pglProgram::SetCascadeShadowState(bool enabled,const GLuint* textures,
                                        const pddiMatrix* matrices,
                                        const float* texelSizes)
 {
+    // The ordinary GLSL ES 1.00 program is the guaranteed manual-PCF
+    // fallback. Gameplay multiview uses its independently linked ES 3.20
+    // comparison-sampler program. Change sampler state only when crossing
+    // those render modes, never once per material.
+    static int comparisonMode=-1;
+    const int requestedMode=
+        usingMultiviewProgram&&multiviewHardwarePcf?1:0;
+    if(enabled && comparisonMode!=requestedMode)
+    {
+        for(int i=0;i<3;++i)
+        {
+            glActiveTexture(GL_TEXTURE1+i);
+            glBindTexture(GL_TEXTURE_2D,textures[i]);
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,
+                            requestedMode?GL_LINEAR:GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,
+                            requestedMode?GL_LINEAR:GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_COMPARE_MODE,
+                            requestedMode?GL_COMPARE_REF_TO_TEXTURE:GL_NONE);
+            if(requestedMode)
+                // Manual CSM returns 1.0 for a shadowed receiver:
+                // (receiverDepth-bias) > storedDepth. Preserve that convention
+                // so both the material darkening and overlay discard paths see
+                // the same shadow factor.
+                glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_COMPARE_FUNC,GL_GREATER);
+        }
+        glActiveTexture(GL_TEXTURE0);
+        comparisonMode=requestedMode;
+        static bool loggedHardwarePcf=false;
+        if(requestedMode && !loggedHardwarePcf)
+        {
+            SDL_Log("VR CSM: GLSL ES 3.20 hardware 2x2 PCF active");
+            loggedHardwarePcf=true;
+        }
+    }
     SetShadowState(enabled,textures[0],&matrices[0],texelSizes[0]);
     for(int i=0;i<2;++i)
     {
@@ -446,14 +519,48 @@ bool pglProgram::LinkProgram(GLuint vertexShader, GLuint fragmentShader)
     const std::map<GLuint,ShaderSource>::const_iterator fsi=sShaderSources.find(fragmentShader);
     if(vsi!=sShaderSources.end() && fsi!=sShaderSources.end())
     {
-        GLuint mvs=CompileMultiviewShader(GL_VERTEX_SHADER,vsi->second.text);
-        GLuint mfs=CompileMultiviewShader(GL_FRAGMENT_SHADER,fsi->second.text);
+        GLuint mvs=CompileMultiviewShader(GL_VERTEX_SHADER,vsi->second.text,false);
+        const bool hasShadowSampler=
+            fsi->second.text.find("uniform sampler2D shadowTex;")!=std::string::npos;
+        GLuint mfs=CompileMultiviewShader(GL_FRAGMENT_SHADER,fsi->second.text,
+                                          hasShadowSampler);
+        bool hardwarePcf=hasShadowSampler && mfs!=0;
+        if(!mfs && hasShadowSampler)
+        {
+            SDL_Log("VR CSM: hardware PCF shader rejected; using multiview manual-PCF fallback");
+            mfs=CompileMultiviewShader(GL_FRAGMENT_SHADER,fsi->second.text,false);
+            hardwarePcf=false;
+        }
         if(mvs&&mfs)
         {
             multiviewProgram=glCreateProgram();glAttachShader(multiviewProgram,mvs);glAttachShader(multiviewProgram,mfs);
             glBindAttribLocation(multiviewProgram,0,"position");glBindAttribLocation(multiviewProgram,1,"normal");glBindAttribLocation(multiviewProgram,2,"texcoord");glBindAttribLocation(multiviewProgram,3,"color");
             glLinkProgram(multiviewProgram);GLint linked=0;glGetProgramiv(multiviewProgram,GL_LINK_STATUS,&linked);
-            if(!linked){GLint n=0;glGetProgramiv(multiviewProgram,GL_INFO_LOG_LENGTH,&n);std::vector<GLchar> log(n>0?n:1);glGetProgramInfoLog(multiviewProgram,n,&n,log.data());SDL_Log("Multiview program link error: %s",log.data());glDeleteProgram(multiviewProgram);multiviewProgram=0;sMultiviewProgramFailure=true;}
+            if(!linked && hardwarePcf)
+            {
+                GLint n=0;glGetProgramiv(multiviewProgram,GL_INFO_LOG_LENGTH,&n);std::vector<GLchar> log(n>0?n:1);glGetProgramInfoLog(multiviewProgram,n,&n,log.data());
+                SDL_Log("VR CSM: hardware PCF program rejected at link (%s); using multiview manual-PCF fallback",log.data());
+                glDeleteProgram(multiviewProgram);multiviewProgram=0;glDeleteShader(mfs);
+                mfs=CompileMultiviewShader(GL_FRAGMENT_SHADER,fsi->second.text,false);
+                hardwarePcf=false;
+                if(mfs)
+                {
+                    multiviewProgram=glCreateProgram();glAttachShader(multiviewProgram,mvs);glAttachShader(multiviewProgram,mfs);
+                    glBindAttribLocation(multiviewProgram,0,"position");glBindAttribLocation(multiviewProgram,1,"normal");glBindAttribLocation(multiviewProgram,2,"texcoord");glBindAttribLocation(multiviewProgram,3,"color");
+                    glLinkProgram(multiviewProgram);glGetProgramiv(multiviewProgram,GL_LINK_STATUS,&linked);
+                }
+                else linked=0;
+            }
+            if(!linked)
+            {
+                if(multiviewProgram)
+                {
+                    GLint n=0;glGetProgramiv(multiviewProgram,GL_INFO_LOG_LENGTH,&n);std::vector<GLchar> log(n>0?n:1);glGetProgramInfoLog(multiviewProgram,n,&n,log.data());SDL_Log("Multiview program link error: %s",log.data());
+                    glDeleteProgram(multiviewProgram);multiviewProgram=0;
+                }
+                sMultiviewProgramFailure=true;
+            }
+            else multiviewHardwarePcf=hardwarePcf;
         }
         else sMultiviewProgramFailure=true;
         if(mvs)glDeleteShader(mvs);if(mfs)glDeleteShader(mfs);

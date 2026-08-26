@@ -69,7 +69,7 @@ protected:
     GLuint program;
 #if defined(RAD_ANDROID)
     GLuint multiviewProgram;
-    bool usingMultiviewProgram;
+    bool usingMultiviewProgram,multiviewHardwarePcf;
     GLint vrProjection,vrViewAdjustment;
     void RefreshUniformLocations();
 #endif

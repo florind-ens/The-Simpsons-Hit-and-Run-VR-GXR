@@ -19,6 +19,10 @@
 #include <radmath/radmath.hpp>
 #include <pddi/pddiext.hpp>
 #include <p3d/anim/instancedgeometry.hpp>
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#include <radtime.hpp>
+#endif
 
 #include <string.h>
 
@@ -65,6 +69,9 @@ void tPolySkin::Display(tPose* p)
     {
         return;
     }
+#if defined(RAD_ANDROID)
+    const radTime64 vrSkinStart=radTimeGetMicroseconds64();
+#endif
 
     // transform the pose joints into world space
     p->Evaluate();
@@ -99,6 +106,10 @@ void tPolySkin::Display(tPose* p)
     {
         hwSkin->End();
     }
+#if defined(RAD_ANDROID)
+    SharOpenXR::RecordRenderSection(12,
+        (radTimeGetMicroseconds64()-vrSkinStart)/1000.0);
+#endif
 }
 
 void tPolySkin::DisplayInstanced(tPose* p, unsigned count)

@@ -15,6 +15,9 @@
 #include <p3d/matrixstack.hpp>
 #include <p3d/utility.hpp>
 #include "FeScreen.h"
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+#endif
 #include "FeApp.h"
 #include "FeProject.h"
 #include "FePage.h"
@@ -202,7 +205,16 @@ void FeScreen::Display()
     p3d::stack->Translate( -0.5f, -0.5f / aspect, 0.5f );
 
     // update all screen objects
+#if defined(RAD_ANDROID)
+    // The multiview world is followed by one conventional GUI render per
+    // eye. Simulation must advance once per XR frame, not once per eye.
+    // Updating action-prompt animations twice was the dominant render-thread
+    // cost whenever a contextual car/door prompt became visible.
+    if(!SharOpenXR::IsRightEyeRendering())
+        FeOwner::Update( FeApp::GetInstance()->GetDeltaTime() );
+#else
     FeOwner::Update( FeApp::GetInstance()->GetDeltaTime() );
+#endif
 
     // render all screen objects
     FeOwner::Display();

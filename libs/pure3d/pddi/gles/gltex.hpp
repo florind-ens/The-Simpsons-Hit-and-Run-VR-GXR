@@ -45,6 +45,7 @@ public:
 #if defined(RAD_ANDROID)
     void SetSourceName(const char* name);
     const char* GetSourceName() const { return sourceName; }
+    void SetSamplerState(int magFilter,int minFilter,int wrapS,int wrapT,float anisotropy);
 #endif
 
 protected:
@@ -65,6 +66,11 @@ protected:
     char** bits;
 #if defined(RAD_ANDROID)
     char sourceName[96];
+    int cachedMagFilter;
+    int cachedMinFilter;
+    int cachedWrapS;
+    int cachedWrapT;
+    float cachedAnisotropy;
 #endif
 };
 

@@ -89,6 +89,10 @@ void pglTexture::SetGLState(void)
     {
         contextID = context->contextID;
         gltexture = 0;
+#if defined(RAD_ANDROID)
+        cachedMagFilter=cachedMinFilter=cachedWrapS=cachedWrapT=-1;
+        cachedAnisotropy=-1.0f;
+#endif
     }
 
     MICROPROFILE_SCOPEI("PDDI", "pglTexture::SetGLState", MP_RED);
@@ -98,6 +102,10 @@ void pglTexture::SetGLState(void)
         glDeleteTextures(1, &gltexture);
         glGenTextures(1,&gltexture);
         glBindTexture(GL_TEXTURE_2D, gltexture);
+#if defined(RAD_ANDROID)
+        cachedMagFilter=cachedMinFilter=cachedWrapS=cachedWrapT=-1;
+        cachedAnisotropy=-1.0f;
+#endif
 
         if (type == PDDI_TEXTYPE_DXT1 || type == PDDI_TEXTYPE_DXT3 || type == PDDI_TEXTYPE_DXT5)
         {
@@ -277,6 +285,8 @@ pglTexture::pglTexture(pglContext* c)
 {
 #if defined(RAD_ANDROID)
     sourceName[0]='\0';
+    cachedMagFilter=cachedMinFilter=cachedWrapS=cachedWrapT=-1;
+    cachedAnisotropy=-1.0f;
 #endif
     context = c;
     contextID = c->contextID;
@@ -287,6 +297,38 @@ pglTexture::pglTexture(pglContext* c)
 }
 
 #if defined(RAD_ANDROID)
+void pglTexture::SetSamplerState(int magFilter,int minFilter,int wrapS,int wrapT,float anisotropy)
+{
+    // Sampler parameters are stored by the GL texture object. Most P3D
+    // materials submit them again for every primitive group, which is costly
+    // on the Android driver for composite cars and state props.
+    if(cachedMagFilter!=magFilter)
+    {
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,magFilter);
+        cachedMagFilter=magFilter;
+    }
+    if(cachedMinFilter!=minFilter)
+    {
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,minFilter);
+        cachedMinFilter=minFilter;
+    }
+    if(cachedWrapS!=wrapS)
+    {
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,wrapS);
+        cachedWrapS=wrapS;
+    }
+    if(cachedWrapT!=wrapT)
+    {
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,wrapT);
+        cachedWrapT=wrapT;
+    }
+    if(cachedAnisotropy!=anisotropy)
+    {
+        glTexParameterf(GL_TEXTURE_2D,0x84FE,anisotropy);
+        cachedAnisotropy=anisotropy;
+    }
+}
+
 void pglTexture::SetSourceName(const char* name)
 {
     if(!name) { sourceName[0]='\0'; return; }
