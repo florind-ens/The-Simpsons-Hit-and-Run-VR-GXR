@@ -54,6 +54,11 @@
 #include <p3d/utility.hpp>
 #include <p3d/p3dtypes.hpp>
 
+#ifdef RAD_ANDROID
+#include <sys/stat.h>
+#include <android/log.h>
+#endif
+
 //=============================================================================
 // Namespace
 //=============================================================================
@@ -813,6 +818,27 @@ void daSoundRenderingManager::SetLanguage( Scrooby::XLLanguage language )
             rAssertMsg( false, "Language not supported by sound system" );
             break;
     }
+
+#ifdef RAD_ANDROID
+    // PC language packs store their localized speech in separate cement
+    // archives.  Do not unregister the working English archive when the
+    // selected pack is not installed: an unresolved cement request otherwise
+    // leaves the boot loading queue on a black screen indefinitely.
+    char dialoguePath[ 256 ];
+    snprintf( dialoguePath, sizeof( dialoguePath ),
+              "/storage/emulated/0/SimpsonsHitRun/%s", cementFileName );
+
+    struct stat dialogueInfo;
+    if( stat( dialoguePath, &dialogueInfo ) != 0 ||
+        !S_ISREG( dialogueInfo.st_mode ) )
+    {
+        __android_log_print( ANDROID_LOG_WARN, "SimpsonsHitAndRun",
+                             "Dialogue archive '%s' is missing; using '%s'",
+                             cementFileName, s_EnglishDialogue );
+        cementFileName = s_EnglishDialogue;
+        m_currentLanguage = DIALOGUE_LANGUAGE_ENGLISH;
+    }
+#endif
 
     if( m_currentLanguage == oldLanguage )
     {
