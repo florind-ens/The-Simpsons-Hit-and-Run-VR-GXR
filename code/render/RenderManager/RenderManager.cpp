@@ -917,8 +917,17 @@ void RenderManager::ContextUpdate( unsigned int iElapsedTime )
                     {
                         originalCameras[v] = camera->GetCameraToWorldMatrix();
                         rmt::Matrix eyeCamera;
-                        if(multiviewActive) SharOpenXR::PrepareMultiviewCamera(camera);
-                        if (SharOpenXR::GetEyeCamera(multiviewActive?0:renderPass, camera, &eyeCamera))
+                        bool haveEyeCamera=false;
+                        if(multiviewActive)
+                        {
+                            haveEyeCamera=SharOpenXR::PrepareMultiviewCamera(camera) &&
+                                          SharOpenXR::GetLatestCullingCamera(&eyeCamera);
+                        }
+                        else
+                        {
+                            haveEyeCamera=SharOpenXR::GetEyeCamera(renderPass, camera, &eyeCamera);
+                        }
+                        if (haveEyeCamera)
                         {
                             camera->SetCameraMatrix(&eyeCamera);
                             changedCameras[v] = true;

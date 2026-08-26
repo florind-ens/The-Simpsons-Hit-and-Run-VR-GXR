@@ -1308,11 +1308,16 @@ bool BeginMultiview()
 bool PrepareMultiviewCamera(tCamera* base)
 {
     if(!g.multiviewRendering||!base)return false;
-    rmt::Matrix leftWorld,rightWorld,worldToRight;
+    rmt::Matrix leftWorld,rightWorld,centreWorld,worldToLeft,worldToRight;
     if(!GetEyeCamera(0,base,&leftWorld)||!GetEyeCamera(1,base,&rightWorld))return false;
+    // Traverse/cull the scene once from the midpoint of the two eyes.  Using
+    // the left eye as the common camera can reject geometry which is visible
+    // only at the outer edge of the right eye.
+    if(!GetLatestCullingCamera(&centreWorld))return false;
+    worldToLeft.InvertOrtho(leftWorld);
     worldToRight.InvertOrtho(rightWorld);
-    g.multiviewViewAdjustment[0].Identity();
-    g.multiviewViewAdjustment[1].Mult(leftWorld,worldToRight);
+    g.multiviewViewAdjustment[0].Mult(centreWorld,worldToLeft);
+    g.multiviewViewAdjustment[1].Mult(centreWorld,worldToRight);
     MakeProjection(g.eyes[0].view.fov,0.1f,1000.0f,&g.multiviewProjection[0]);
     MakeProjection(g.eyes[1].view.fov,0.1f,1000.0f,&g.multiviewProjection[1]);
     return true;
