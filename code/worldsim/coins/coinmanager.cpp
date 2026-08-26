@@ -1070,15 +1070,6 @@ void CoinManager::HUDRender( bool counterIconOnly )
     if( ( mNumHUDFlying > 0 ) || renderHUDCoin )
     {
 	    p3d::stack->Push();
-        const pddiCullMode oldCullMode=p3d::pddi->GetCullMode();
-        if( counterIconOnly )
-        {
-            // The GLES backend maps PDDI_CULL_NORMAL to GL_FRONT. For this
-            // model that preserves its inward-facing polygons. Cull GL_BACK
-            // through PDDI_CULL_INVERTED so the cached icon shows the coin's
-            // exterior shell, then restore the caller's mode below.
-            p3d::pddi->SetCullMode(PDDI_CULL_INVERTED);
-        }
         bool oldZWrite = p3d::pddi->GetZWrite();
         pddiCompareMode oldZComp = p3d::pddi->GetZCompare();
         if( oldZWrite )
@@ -1163,10 +1154,6 @@ void CoinManager::HUDRender( bool counterIconOnly )
         if( oldZComp != PDDI_COMPARE_ALWAYS )
         {
        	    p3d::pddi->SetZCompare( oldZComp );
-        }
-        if( counterIconOnly )
-        {
-            p3d::pddi->SetCullMode(oldCullMode);
         }
 	    p3d::stack->Pop();
     }

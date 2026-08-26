@@ -127,23 +127,25 @@ void FrontEndRenderLayer::DrawCoinObject()
 	   (coinContext == CONTEXT_PAUSE || !GetPresentationManager()->IsBusy()))
 	{
 #if defined(RAD_ANDROID)
-        // Capture a clean, centred counter icon.  The normal HUD render also
-        // contains coins flying across the screen, which made the crop depend
-        // on whichever animation happened to be present on its first frame.
-        const bool captureVrCoin=SharOpenXR::IsSpatialHudEnabled() &&
-            GetGameFlow()->GetCurrentContext()!=CONTEXT_PAUSE &&
-            SharOpenXR::BeginMissionHudCapture(4,0,0,640,480);
-#endif
-#if defined(RAD_ANDROID)
-        if(captureVrCoin) GetCoinManager()->HUDRender(true);
-        else GetCoinManager()->HUDRender();
+        // Never submit the shared world coin drawable through a legacy
+        // offscreen pass. Its GLES material selects a non-multiview program
+        // and then makes every world coin disappear. The spatial counter has
+        // an independent texture; this call only retains flying HUD coins.
+        const bool spatialCoinHud=SharOpenXR::IsSpatialHudEnabled();
+        if(spatialCoinHud)
+            SharOpenXR::CaptureSpatialCoinIcon();
+        else
+            GetCoinManager()->HUDRender();
 #else
         GetCoinManager()->HUDRender();
 #endif
 #if defined(RAD_ANDROID)
-        if(captureVrCoin) SharOpenXR::EndMissionHudCapture();
-#endif
+        // Flying-to-counter coins and their sparkles use legacy screen
+        // coordinates and become a head-locked duplicate in VR.
+        if(!spatialCoinHud) GetSparkleManager()->HUDRender();
+#else
         GetSparkleManager()->HUDRender();
+#endif
         //??? GetHitnRunManager()->HUDRender();
     }
 	else

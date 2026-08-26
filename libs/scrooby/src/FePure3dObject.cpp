@@ -30,6 +30,11 @@
 #include "ResourceManager/FeResourceManager.h"
 #if defined(RAD_ANDROID)
 #include <vr/openxrmanager.h>
+static Scrooby::Pure3dObject* gVrIrisPure3dObject=NULL;
+void ScroobySetVrIrisPure3dObject(Scrooby::Pure3dObject* object)
+{
+    gVrIrisPure3dObject=object;
+}
 #endif
 
 // TC [HACK]: Override camera settings.
@@ -99,6 +104,10 @@ FePure3dObject::FePure3dObject
 //===========================================================================
 FePure3dObject::~FePure3dObject()
 {
+#if defined(RAD_ANDROID)
+    if(gVrIrisPure3dObject==static_cast<Scrooby::Pure3dObject*>(this))
+        gVrIrisPure3dObject=NULL;
+#endif
     // remove all lights that were added to view
     //
     for( unsigned int i = 0; i < m_numLightsAdded; i++ )
@@ -433,6 +442,18 @@ void FePure3dObject::Render()
                                m_colourWriteEnabled,
                                m_colourWriteEnabled,
                                alphaWriteEnabled );
+#if defined(RAD_ANDROID)
+    const bool suppressVrIris=SharOpenXR::IsVrModeEnabled() &&
+        gVrIrisPure3dObject==static_cast<Scrooby::Pure3dObject*>(this);
+    const bool oldZWrite=p3d::pddi->GetZWrite();
+    if(suppressVrIris)
+    {
+        // Keep Display and its animation lifecycle active, but emit neither
+        // colour nor an invisible depth mask into the VR eyes.
+        p3d::pddi->SetColourWrite(false,false,false,false);
+        p3d::pddi->SetZWrite(false);
+    }
+#endif
 
     // save z-buffer setting
     //
@@ -575,6 +596,9 @@ void FePure3dObject::Render()
 
     // restore colour write
     //
+#if defined(RAD_ANDROID)
+    if(suppressVrIris)p3d::pddi->SetZWrite(oldZWrite);
+#endif
     p3d::pddi->SetColourWrite( true, true, true, true );
 
     // pop the view state

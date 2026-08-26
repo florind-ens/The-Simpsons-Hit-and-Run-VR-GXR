@@ -114,7 +114,7 @@ struct State
     bool embeddedHudRendering;
     bool radarRendering;
     unsigned radarDrawCount;
-    GLuint radarFramebuffer,radarTexture,radarDisplayTexture,radarDepthBuffer,radarProgram,hudQuadVbo;
+    GLuint radarFramebuffer,radarTexture,radarDisplayTexture,radarDepthBuffer,radarProgram,hudQuadVbo,irisBlackProgram;
     GLint radarSavedFramebuffer,radarSavedViewport[4];
     GLint radarSavedScissor[4];
     bool radarSavedScissorEnabled;
@@ -122,13 +122,15 @@ struct State
     GLboolean radarSavedColourMask[4];
     float radarUv[4];
     bool radarCropValid;
-    // Objective, message, timer, coin count and the separately rendered
-    // three-dimensional gameplay coin.
-    enum { MISSION_HUD_COUNT=6 };
+    // Objective, message, timer, coin count, 3D coin, action prompt, and
+    // the additional mission counters (par time, collectibles, race place).
+    enum { MISSION_HUD_COUNT=13 };
     GLuint missionHudFramebuffer[MISSION_HUD_COUNT];
     GLuint missionHudTexture[MISSION_HUD_COUNT];
     float missionHudUv[MISSION_HUD_COUNT][4];
     int missionHudRect[MISSION_HUD_COUNT][4];
+    rmt::Matrix missionHudLayout[MISSION_HUD_COUNT];
+    bool missionHudLayoutValid[MISSION_HUD_COUNT];
     float missionHudAspect[MISSION_HUD_COUNT];
     bool missionHudVisible[MISSION_HUD_COUNT];
     bool missionHudCropValid[MISSION_HUD_COUNT];
@@ -142,6 +144,7 @@ struct State
     bool frontendPlaneRendering;
     bool frontendPlaneAnchorValid;
     bool pauseCoinVisible;
+    bool irisBlackoutTarget;
     XrPosef frontendPlaneAnchor;
     bool enhancedUiConvergence;
     bool vrModeEnabled;
@@ -538,6 +541,7 @@ static void DestroySwapchainsAndRenderTargets()
     if(g.radarTexture) glDeleteTextures(1,&g.radarTexture);
     if(g.radarDisplayTexture) glDeleteTextures(1,&g.radarDisplayTexture);
     if(g.radarProgram) glDeleteProgram(g.radarProgram);
+    if(g.irisBlackProgram) glDeleteProgram(g.irisBlackProgram);
     if(g.hudQuadVbo) glDeleteBuffers(1,&g.hudQuadVbo);
     glDeleteFramebuffers(State::MISSION_HUD_COUNT,g.missionHudFramebuffer);
     glDeleteTextures(State::MISSION_HUD_COUNT,g.missionHudTexture);
@@ -549,6 +553,7 @@ static void DestroySwapchainsAndRenderTargets()
     if(g.gtaoCompositeProgram) glDeleteProgram(g.gtaoCompositeProgram);
     if(g.gtaoVbo) glDeleteBuffers(1,&g.gtaoVbo);
     g.framebuffer=0; g.layerFramebuffer=0; g.depthTexture=0;
+    g.irisBlackProgram=0;
     std::memset(g.missionHudFramebuffer,0,sizeof(g.missionHudFramebuffer));
     std::memset(g.missionHudTexture,0,sizeof(g.missionHudTexture));
     std::memset(g.gtaoFramebuffer,0,sizeof(g.gtaoFramebuffer));
@@ -1269,6 +1274,54 @@ bool BeginFrame()
 
 static void DrawRadarPlane();
 static void DrawMissionHudPlanes();
+static void ApplyIrisBlackout()
+{
+    static float alpha=0.0f;
+    static Uint32 lastTicks=0;
+    const Uint32 now=SDL_GetTicks();
+    const float dt=lastTicks?std::min(0.1f,(now-lastTicks)*0.001f):0.0f;
+    lastTicks=now;
+    const float target=g.irisBlackoutTarget?1.0f:0.0f;
+    const float step=dt*3.5f;
+    if(alpha<target)alpha=std::min(target,alpha+step);
+    else if(alpha>target)alpha=std::max(target,alpha-step);
+    if(alpha<=0.001f)return;
+
+    if(!g.irisBlackProgram)
+    {
+        const char* vs="precision highp float;attribute vec2 position;void main(){gl_Position=vec4(position,0.0,1.0);}";
+        const char* fs="precision mediump float;uniform float alpha;void main(){gl_FragColor=vec4(0.0,0.0,0.0,alpha);}";
+        g.irisBlackProgram=CreateGlProgram(vs,fs);
+    }
+    if(!g.hudQuadVbo)glGenBuffers(1,&g.hudQuadVbo);
+    if(!g.irisBlackProgram||!g.hudQuadVbo)return;
+
+    GLint oldProgram=0,oldArray=0,oldSrc=0,oldDst=0;
+    GLboolean oldMask[4];
+    glGetIntegerv(GL_CURRENT_PROGRAM,&oldProgram);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING,&oldArray);
+    glGetIntegerv(GL_BLEND_SRC_RGB,&oldSrc);glGetIntegerv(GL_BLEND_DST_RGB,&oldDst);
+    glGetBooleanv(GL_COLOR_WRITEMASK,oldMask);
+    const GLboolean depth=glIsEnabled(GL_DEPTH_TEST),blend=glIsEnabled(GL_BLEND);
+    const GLboolean cull=glIsEnabled(GL_CULL_FACE),scissor=glIsEnabled(GL_SCISSOR_TEST);
+    glDisable(GL_DEPTH_TEST);glDisable(GL_CULL_FACE);glDisable(GL_SCISSOR_TEST);
+    glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+    glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+    const float vertices[8]={-1,-1,1,-1,-1,1,1,1};
+    glUseProgram(g.irisBlackProgram);glBindBuffer(GL_ARRAY_BUFFER,g.hudQuadVbo);
+    glBufferData(GL_ARRAY_BUFFER,sizeof(vertices),vertices,GL_STREAM_DRAW);
+    const GLint position=glGetAttribLocation(g.irisBlackProgram,"position");
+    glEnableVertexAttribArray(position);
+    glVertexAttribPointer(position,2,GL_FLOAT,GL_FALSE,0,reinterpret_cast<const void*>(0));
+    glUniform1f(glGetUniformLocation(g.irisBlackProgram,"alpha"),alpha);
+    glDrawArrays(GL_TRIANGLE_STRIP,0,4);glDisableVertexAttribArray(position);
+    glColorMask(oldMask[0],oldMask[1],oldMask[2],oldMask[3]);
+    glBlendFunc(oldSrc,oldDst);glBindBuffer(GL_ARRAY_BUFFER,oldArray);glUseProgram(oldProgram);
+    if(depth)glEnable(GL_DEPTH_TEST);else glDisable(GL_DEPTH_TEST);
+    if(blend)glEnable(GL_BLEND);else glDisable(GL_BLEND);
+    if(cull)glEnable(GL_CULL_FACE);else glDisable(GL_CULL_FACE);
+    if(scissor)glEnable(GL_SCISSOR_TEST);else glDisable(GL_SCISSOR_TEST);
+}
 unsigned GetEyeCount(){ return g.shouldRender ? 2u : 0u; }
 bool IsMultiviewAvailable(){return g.multiviewAvailable;}
 // This is queried from the material hot path. The renderer exclusively owns
@@ -1355,7 +1408,7 @@ void EndMultiview()
     // Ordinary HUD shaders cannot target a two-view framebuffer. Draw their
     // cached planes into each array layer after the world broadcast finishes.
     glBindFramebuffer(GL_FRAMEBUFFER,g.layerFramebuffer);
-    for(unsigned eye=0;eye<2;++eye){g.activeEye=eye+1;g.FramebufferTextureLayer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,g.eyes[0].images[g.multiviewImageIndex].image,0,eye);g.FramebufferTextureLayer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,g.multiviewDepthTexture,0,eye);DrawRadarPlane();DrawMissionHudPlanes();DrawPauseCoinIcon();}
+    for(unsigned eye=0;eye<2;++eye){g.activeEye=eye+1;g.FramebufferTextureLayer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,g.eyes[0].images[g.multiviewImageIndex].image,0,eye);g.FramebufferTextureLayer(GL_FRAMEBUFFER,GL_DEPTH_ATTACHMENT,g.multiviewDepthTexture,0,eye);DrawRadarPlane();DrawMissionHudPlanes();DrawPauseCoinIcon();ApplyIrisBlackout();}
     // xrReleaseSwapchainImage transfers ownership to the runtime. A flush is
     // sufficient to make queued GL work visible without stalling CPU and GPU
     // every frame as glFinish did.
@@ -1497,6 +1550,7 @@ void EndEye(unsigned eye)
     DrawRadarPlane();
     DrawMissionHudPlanes();
     DrawPauseCoinIcon();
+    ApplyIrisBlackout();
     if(eye==1 && g.multiviewImageAcquired)
     {
         XrSwapchainImageReleaseInfo ri={XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
@@ -1584,7 +1638,7 @@ bool BeginRadarCapture(int xMin,int yMin,int xMax,int yMax)
         const char* vs="precision highp float;attribute vec4 position;attribute vec2 texcoord;varying vec2 uv;void main(){gl_Position=position;uv=texcoord;}";
         const char* fs="precision mediump float;uniform sampler2D tex;varying vec2 uv;void main(){vec4 c=texture2D(tex,uv);if(c.a<0.01)discard;gl_FragColor=c;}";
         g.radarProgram=CreateGlProgram(vs,fs);
-        glGenBuffers(1,&g.hudQuadVbo);
+        if(!g.hudQuadVbo)glGenBuffers(1,&g.hudQuadVbo);
     }
     if(!g.radarFramebuffer || !g.radarTexture ||
        !g.radarDepthBuffer || !g.radarProgram) return false;
@@ -1708,6 +1762,12 @@ bool BeginMissionHudCapture(unsigned slot,int xMin,int yMin,int xMax,int yMax)
 {
     if(!IsSpatialHudEnabled() || !g.activeEye || slot>=State::MISSION_HUD_COUNT)
         return false;
+    const int rect[4]={xMin,yMin,xMax,yMax};
+    if(std::memcmp(g.missionHudRect[slot],rect,sizeof(rect))!=0)
+    {
+        std::memcpy(g.missionHudRect[slot],rect,sizeof(rect));
+        g.missionHudCropValid[slot]=false;
+    }
     // Save the eye target before resource creation binds the offscreen FBO.
     glGetIntegerv(GL_FRAMEBUFFER_BINDING,&g.radarSavedFramebuffer);
     glGetIntegerv(GL_VIEWPORT,g.radarSavedViewport);
@@ -1829,21 +1889,49 @@ void EndMissionHudCapture()
                 g.radarSavedColourMask[2],g.radarSavedColourMask[3]);
 }
 
+void UpdateMissionHudLayout(unsigned slot,const rmt::Matrix& layout)
+{
+    if(slot>=State::MISSION_HUD_COUNT) return;
+    if(!g.missionHudLayoutValid[slot] ||
+       std::memcmp(&g.missionHudLayout[slot],&layout,sizeof(layout))!=0)
+    {
+        g.missionHudLayout[slot]=layout;
+        g.missionHudLayoutValid[slot]=true;
+        g.missionHudCropValid[slot]=false;
+    }
+}
+
+void ResetMissionHudSlot(unsigned slot)
+{
+    if(slot>=State::MISSION_HUD_COUNT) return;
+    g.missionHudVisible[slot]=false;
+    g.missionHudCropValid[slot]=false;
+    g.missionHudAspect[slot]=0.0f;
+    g.missionHudLayoutValid[slot]=false;
+    std::memset(g.missionHudUv[slot],0,sizeof(g.missionHudUv[slot]));
+    std::memset(g.missionHudRect[slot],0,sizeof(g.missionHudRect[slot]));
+}
+
 void CaptureSpatialCoinIcon()
 {
-    // Capture beside the counter itself, after slot 3 has proved that the HUD
-    // group is actually being submitted.  FrontEndRenderLayer can be skipped
-    // while PresentationManager is busy, which previously left slot 4 empty.
+    if(g.missionHudTexture[4] && g.missionHudCropValid[4])
+    {
+        g.missionHudVisible[4]=true;
+        return;
+    }
+    // Use the original Pure3D coin, but submit it from one centralized point.
+    // A second capture from FeGroup and a forced inverted cull mode were added
+    // together and caused the shared world material to remain on its legacy
+    // GLES program. Both have been removed.
+    p3d::pddi->PushState(PDDI_STATE_ALL);
     if(BeginMissionHudCapture(4,0,0,640,480))
     {
-        // Slot 3 and the coin both use the orthographic enum, but they have
-        // different offscreen targets and therefore different active
-        // projection matrices.  Re-submit even though the enum is unchanged.
         const pddiProjectionMode mode=p3d::pddi->GetProjectionMode();
         p3d::pddi->SetProjectionMode(mode);
         GetCoinManager()->HUDRender(true);
         EndMissionHudCapture();
     }
+    p3d::pddi->PopState(PDDI_STATE_ALL);
 }
 
 static void DrawRadarPlane()
@@ -1935,9 +2023,10 @@ static void DrawMissionHudQuad(GLuint texture,const float* uv,
 static void DrawMissionHudPlanes()
 {
     if(!IsSpatialHudEnabled()||!g.activeEye||!g.cullingBaseValid||!g.radarProgram) return;
-    if(!g.missionHudVisible[0]&&!g.missionHudVisible[1]&&
-       !g.missionHudVisible[2]&&!g.missionHudVisible[3]&&
-       !g.missionHudVisible[4]&&!g.missionHudVisible[5]) return;
+    bool anyVisible=false;
+    for(unsigned slot=0;slot<State::MISSION_HUD_COUNT;++slot)
+        anyVisible=anyVisible||g.missionHudVisible[slot];
+    if(!anyVisible) return;
     Eye& eye=g.eyes[g.activeEye-1];
     const rmt::Matrix eyeLocal=PoseToGame(RelativePose(g.origin,eye.view.pose));
     rmt::Matrix eyeWorld;eyeWorld.Mult(eyeLocal,g.cullingBaseCamera);
@@ -1963,6 +2052,7 @@ static void DrawMissionHudPlanes()
     glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
     glUseProgram(g.radarProgram);glBindBuffer(GL_ARRAY_BUFFER,0);
     glUniform1i(glGetUniformLocation(g.radarProgram,"tex"),0);
+    unsigned missionStackRow=0;
     for(unsigned slot=0;slot<State::MISSION_HUD_COUNT;++slot){
         // Slot 4 is the persistent 3D icon belonging to counter slot 3.  Its
         // clean texture is refreshed independently, but it must follow the
@@ -2013,15 +2103,19 @@ static void DrawMissionHudPlanes()
                               eyeWorld.Row(1)*0.105f;
             }
         }
-        // Vehicle and wrist layouts share the same centred stack: the mission
-        // icon is the centre, timer above it and objective text below it.
-        const float verticalOffset=slot==2?0.080f:(slot==0?0.0f:-0.085f);
+        // Vehicle and wrist layouts share the same centred stack above the
+        // minimap/current timer. Extra mission counters occupy neighbouring
+        // rows, so a timed collection or race remains readable in VR.
+        const bool missionStackSlot=slot==2 || slot==6 || slot==7 ||
+            slot==8 || slot==9 || slot==10 || slot==11 || slot==12;
+        const float verticalOffset=missionStackSlot?
+            0.080f+0.060f*missionStackRow++:(slot==0?0.0f:-0.085f);
         if(slot!=3 && slot!=4 && slot!=5) anchor.Row(3)=base.Row(3)+base.Row(1)*verticalOffset;
         if(slot==4) anchor.Row(3)=anchor.Row(3)-anchor.Row(0)*0.070f;
         const float aspect=g.missionHudAspect[slot]>0.0f?
             g.missionHudAspect[slot]:1.0f;
         DrawMissionHudQuad(g.missionHudTexture[slot],g.missionHudUv[slot],anchor,
-                           slot==1?0.060f:(slot==2?0.0425f:(slot==3?0.055f:(slot==4?0.105f:(slot==5?0.055f:0.085f)))),aspect,eye);
+                           (slot==1||slot==9)?0.060f:((slot==2||slot==6||slot==7||slot==8||slot==12)?0.0425f:((slot==10||slot==11)?0.050f:(slot==3?0.055f:(slot==4?0.105f:(slot==5?0.055f:0.085f))))),aspect,eye);
     }
     glBindTexture(GL_TEXTURE_2D,oldTexture);glActiveTexture(oldActive);
     glBindBuffer(GL_ARRAY_BUFFER,oldArray);glUseProgram(oldProgram);
@@ -2248,6 +2342,7 @@ bool GetActiveFrontendProjection(rmt::Matrix* out,int* width,int* height)
     return true;
 }
 void SetPauseCoinVisible(bool visible){g.pauseCoinVisible=visible;}
+void SetIrisBlackout(bool black){g.irisBlackoutTarget=black;}
 void DrawPauseCoinIcon()
 {
     const unsigned slot=4;

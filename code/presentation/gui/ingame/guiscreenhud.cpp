@@ -269,6 +269,10 @@ MEMTRACK_PUSH_GROUP( "CGUIScreenHud" );
     pGroup = m_missionOverlays->GetGroup( "ParTime" );
     rAssert( pGroup != NULL );
     m_overlays[ HUD_PAR_TIME ] = pGroup;
+#ifdef RAD_ANDROID
+    // Separate race timer; captured into the same spatial timer stack.
+    ScroobySetVrMissionHudGroup( 6, pGroup );
+#endif
     m_parTime = pGroup->GetSprite( "ParTime" );
     rAssert( m_parTime != NULL );
     m_parTime->SetSpriteMode( Scrooby::SPRITE_BITMAP_TEXT );
@@ -282,6 +286,9 @@ MEMTRACK_PUSH_GROUP( "CGUIScreenHud" );
     pGroup = m_missionOverlays->GetGroup( "Collectibles" );
     rAssert( pGroup != NULL );
     m_overlays[ HUD_COLLECTIBLES ] = pGroup;
+#ifdef RAD_ANDROID
+    ScroobySetVrMissionHudGroup( 7, pGroup );
+#endif
     m_collectibles = pGroup->GetSprite( "Collectibles" );
     rAssert( m_collectibles != NULL );
     m_collectibles->SetSpriteMode( Scrooby::SPRITE_BITMAP_TEXT );
@@ -295,6 +302,9 @@ MEMTRACK_PUSH_GROUP( "CGUIScreenHud" );
     pGroup = m_missionOverlays->GetGroup( "Position" );
     rAssert( pGroup != NULL );
     m_overlays[ HUD_RACE_POSITION ] = pGroup;
+#ifdef RAD_ANDROID
+    ScroobySetVrMissionHudGroup( 8, pGroup );
+#endif
     m_positionOrdinal = pGroup->GetText( "PositionOrdinal" );
     m_position = pGroup->GetSprite( "Position" );
     rAssert( m_position != NULL );
@@ -309,6 +319,9 @@ MEMTRACK_PUSH_GROUP( "CGUIScreenHud" );
     pGroup = m_missionOverlays->GetGroup( "Lap" );
     rAssert( pGroup != NULL );
     m_overlays[ HUD_LAP_COUNTER ] = pGroup;
+#ifdef RAD_ANDROID
+    ScroobySetVrMissionHudGroup( 12, pGroup );
+#endif
     m_lap = pGroup->GetSprite( "Lap" );
     rAssert( m_lap != NULL );
     m_lap->SetSpriteMode( Scrooby::SPRITE_BITMAP_TEXT );
@@ -322,11 +335,18 @@ MEMTRACK_PUSH_GROUP( "CGUIScreenHud" );
     pGroup = m_missionOverlays->GetGroup( "DamageMeter" );
     rAssert( pGroup != NULL );
     m_overlays[ HUD_DAMAGE_METER ] = pGroup;
+#ifdef RAD_ANDROID
+    // Mission vehicle health/damage bar.
+    ScroobySetVrMissionHudGroup( 10, pGroup );
+#endif
     m_damageMeter.SetScroobyImage( pGroup->GetSprite( "DamageBar" ) );
 
     pGroup = m_missionOverlays->GetGroup( "ProximityMeter" );
     rAssert( pGroup != NULL );
     m_overlays[ HUD_PROXIMITY_METER ] = pGroup;
+#ifdef RAD_ANDROID
+    ScroobySetVrMissionHudGroup( 11, pGroup );
+#endif
     m_proximityMeter.SetScroobyImage( pGroup->GetSprite( "ProximityBar" ) );
 
     pGroup = m_missionOverlays->GetGroup( "MissionComplete" );
@@ -411,9 +431,10 @@ MEMTRACK_PUSH_GROUP( "CGUIScreenHud" );
     m_helpMessage->SetTextMode( Scrooby::TEXT_WRAP );
     m_helpMessage->ResetTransformation();
     m_helpMessage->Translate( 0, MESSAGE_TEXT_VERTICAL_TRANSLATION );
-    const float vrMessageScale=SharOpenXR::IsVrModeEnabled()?1.35f:1.0f;
-    m_helpMessage->ScaleAboutPoint( MESSAGE_TEXT_SCALE * MESSGAE_TEXT_HORIZONTAL_STRETCH * vrMessageScale,
-                                    MESSAGE_TEXT_SCALE * vrMessageScale,
+    // Keep the authored text-to-frame ratio in VR. Enlarging only the text
+    // by 1.35 made wrapped mission instructions spill outside MessageBox.
+    m_helpMessage->ScaleAboutPoint( MESSAGE_TEXT_SCALE * MESSGAE_TEXT_HORIZONTAL_STRETCH,
+                                    MESSAGE_TEXT_SCALE,
                                     1.0f, 0, 0 );
 
     m_messageBox = pGroup->GetSprite( "MessageBox" );
@@ -1295,6 +1316,9 @@ void CGuiScreenHud::DisplayMessage( bool show, const int index )
 
             rAssert( index >= 0 );
             m_helpMessage->SetIndex( index );
+#ifdef RAD_ANDROID
+            SharOpenXR::ResetMissionHudSlot( 1 );
+#endif
         }
     }
     else
@@ -1689,6 +1713,9 @@ void CGuiScreenHud::DisplayMissionObjective( unsigned int messageID )
     // display mission objective message
     //
     m_helpMessage->SetTextIndex( messageID );
+#ifdef RAD_ANDROID
+    SharOpenXR::ResetMissionHudSlot( 1 );
+#endif
     m_helpMessage->Start();
 }
 
@@ -1762,6 +1789,9 @@ CGuiScreenHud::UpdateOverlays( unsigned int elapsedTime )
             {
                 unsigned int messageIndex = m_helpMessageQueue.Dequeue();
                 m_helpMessage->SetIndex( static_cast<int>( messageIndex ) );
+#ifdef RAD_ANDROID
+                SharOpenXR::ResetMissionHudSlot( 1 );
+#endif
 
                 // reset elapsed message display time
                 //

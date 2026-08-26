@@ -14,6 +14,10 @@
 // Includes
 //===========================================================================
 #include <presentation/gui/ingame/hudevents/hudcountdown.h>
+#ifdef RAD_ANDROID
+namespace Scrooby { class Group; }
+void ScroobySetVrMissionHudGroup(unsigned slot,Scrooby::Group* group);
+#endif
 #include <presentation/gui/utility/specialfx.h>
 #include <presentation/gui/guitextbible.h>
 
@@ -49,6 +53,9 @@ HudCountDown::HudCountDown( Scrooby::Page* pPage )
 //    const float BITMAP_TEXT_SPACING = 0.8f;
 
     rAssert( pPage != NULL );
+#ifdef RAD_ANDROID
+    ScroobySetVrMissionHudGroup( 9, pPage->GetGroup( "CountDown" ) );
+#endif
     m_countDownMessage = pPage->GetSprite( "CountDown" );
     rAssert( m_countDownMessage != NULL );
     m_countDownMessage->SetSpriteMode( Scrooby::SPRITE_BITMAP_TEXT );

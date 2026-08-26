@@ -29,6 +29,10 @@
 #include <p3d/utility.hpp>
 
 #include <raddebug.hpp> // Foundation
+#if defined(RAD_ANDROID)
+#include <vr/openxrmanager.h>
+void ScroobySetVrIrisPure3dObject(Scrooby::Pure3dObject* object);
+#endif
 
 //===========================================================================
 // Global Data, Local Data, Local Classes
@@ -75,6 +79,9 @@ CGuiScreenIrisWipe::CGuiScreenIrisWipe
 
     m_pIris = pPage->GetPure3dObject( "p3d_iris" );
     rAssert( m_pIris );
+#if defined(RAD_ANDROID)
+    ScroobySetVrIrisPure3dObject( m_pIris );
+#endif
 
     // Have to find the multicontroller ourselves because for some stupid reason
     // Scrooby doesn't make it accessable via the Pure3dObject until the first render.
@@ -254,6 +261,9 @@ void CGuiScreenIrisWipe::HandleMessage
 //===========================================================================
 void CGuiScreenIrisWipe::InitIntro()
 {
+#if defined(RAD_ANDROID)
+    SharOpenXR::SetIrisBlackout( true );
+#endif
     if( m_loadingText != NULL )
     {
         // hide loading text
@@ -312,6 +322,12 @@ void CGuiScreenIrisWipe::InitRunning()
 //===========================================================================
 void CGuiScreenIrisWipe::InitOutro()
 {
+#if defined(RAD_ANDROID)
+    // DoNotOpenOnNextOutro keeps the legacy static iris flag closed while
+    // changing gameplay screens. The full-eye VR overlay must still be
+    // released when the destination screen starts its outro.
+    SharOpenXR::SetIrisBlackout( false );
+#endif
     if( m_loadingText != NULL )
     {
         // hide loading text

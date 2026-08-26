@@ -11,15 +11,32 @@
 #endif
 
 #if defined(RAD_ANDROID)
-static Scrooby::Group* gVrRadarGroup=NULL;
-static Scrooby::Group* gVrMissionHudGroup[6]={NULL,NULL,NULL,NULL,NULL,NULL};
+enum { VR_MISSION_HUD_GROUP_COUNT=13 };
+enum { VR_HUD_GROUP_INSTANCES=8 };
+static Scrooby::Group* gVrRadarGroup[VR_HUD_GROUP_INSTANCES]={NULL};
+static Scrooby::Group* gVrMissionHudGroup[VR_MISSION_HUD_GROUP_COUNT][VR_HUD_GROUP_INSTANCES]={{NULL}};
 void ScroobySetVrRadarGroup(Scrooby::Group* group)
 {
-    gVrRadarGroup=group;
+    if(!group) return;
+    for(unsigned i=0;i<VR_HUD_GROUP_INSTANCES;++i)
+    {
+        if(gVrRadarGroup[i]==group) return;
+        if(!gVrRadarGroup[i]) {gVrRadarGroup[i]=group;return;}
+    }
 }
 void ScroobySetVrMissionHudGroup(unsigned slot,Scrooby::Group* group)
 {
-    if(slot<6) gVrMissionHudGroup[slot]=group;
+    if(slot>=VR_MISSION_HUD_GROUP_COUNT || !group) return;
+    for(unsigned i=0;i<VR_HUD_GROUP_INSTANCES;++i)
+    {
+        if(gVrMissionHudGroup[slot][i]==group) return;
+        if(!gVrMissionHudGroup[slot][i])
+        {
+            gVrMissionHudGroup[slot][i]=group;
+            SharOpenXR::ResetMissionHudSlot(slot);
+            return;
+        }
+    }
 }
 #endif
 
@@ -34,17 +51,37 @@ FeGroup::FeGroup( const tName& name )
 
 FeGroup::~FeGroup()
 {
+#if defined(RAD_ANDROID)
+    Scrooby::Group* self=static_cast<Scrooby::Group*>(this);
+    for(unsigned i=0;i<VR_HUD_GROUP_INSTANCES;++i)
+        if(gVrRadarGroup[i]==self) gVrRadarGroup[i]=NULL;
+    for(unsigned slot=0;slot<VR_MISSION_HUD_GROUP_COUNT;++slot)
+    {
+        for(unsigned instance=0;instance<VR_HUD_GROUP_INSTANCES;++instance)
+        {
+            if(gVrMissionHudGroup[slot][instance]==self)
+            {
+                gVrMissionHudGroup[slot][instance]=NULL;
+                SharOpenXR::ResetMissionHudSlot(slot);
+            }
+        }
+    }
+#endif
 }
 
 void FeGroup::Display()
 {
 #if defined(RAD_ANDROID)
-    const bool isRadar=static_cast<Scrooby::Group*>(this)==gVrRadarGroup &&
-                        SharOpenXR::IsSpatialHudEnabled();
+    Scrooby::Group* self=static_cast<Scrooby::Group*>(this);
+    bool isRadar=false;
+    for(unsigned i=0;i<VR_HUD_GROUP_INSTANCES;++i)
+        isRadar=isRadar||self==gVrRadarGroup[i];
+    isRadar=isRadar&&SharOpenXR::IsSpatialHudEnabled();
     int missionSlot=-1;
-    for(int i=0;i<6;++i)
-        if(static_cast<Scrooby::Group*>(this)==gVrMissionHudGroup[i] &&
-           SharOpenXR::IsSpatialHudEnabled()) missionSlot=i;
+    for(int slot=0;slot<VR_MISSION_HUD_GROUP_COUNT;++slot)
+        for(unsigned instance=0;instance<VR_HUD_GROUP_INSTANCES;++instance)
+            if(self==gVrMissionHudGroup[slot][instance] &&
+               SharOpenXR::IsSpatialHudEnabled()) missionSlot=slot;
     // The legacy GUI is stateful: on its second eye traversal Map0 can draw
     // again while Radar0 sprites are skipped. Capturing that incomplete pass
     // overwrites the shared texture and leaves the frame visible only in the
@@ -55,6 +92,8 @@ void FeGroup::Display()
     int radarXMin=0,radarYMin=0,radarXMax=640,radarYMax=480;
     if(isRadar) GetBoundingBox(radarXMin,radarYMin,radarXMax,radarYMax);
     if(missionSlot>=0) GetBoundingBox(radarXMin,radarYMin,radarXMax,radarYMax);
+    if(missionSlot>=0)
+        SharOpenXR::UpdateMissionHudLayout((unsigned)missionSlot,*GetMatrix());
     const bool captured=isRadar ? SharOpenXR::BeginRadarCapture(
         radarXMin,radarYMin,radarXMax,radarYMax) :
         (missionSlot>=0 && SharOpenXR::BeginMissionHudCapture(
@@ -77,7 +116,6 @@ void FeGroup::Display()
         else
         {
             SharOpenXR::EndMissionHudCapture();
-            if(missionSlot==3) SharOpenXR::CaptureSpatialCoinIcon();
         }
         // Re-submit the unchanged projection mode: the spatial radar matrix
         // was selected without changing this enum, so otherwise PDDI keeps it

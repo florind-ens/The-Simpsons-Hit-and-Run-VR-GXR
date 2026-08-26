@@ -33,7 +33,9 @@ namespace SharOpenXR
     void EndRadarCapture();
     bool BeginMissionHudCapture(unsigned slot, int xMin, int yMin,
                                 int xMax, int yMax);
+    void UpdateMissionHudLayout(unsigned slot,const rmt::Matrix& layout);
     void EndMissionHudCapture();
+    void ResetMissionHudSlot(unsigned slot);
     void CaptureSpatialCoinIcon();
     bool IsRadarRendering() __attribute__((weak));
     bool IsRightEyeRendering();
@@ -53,6 +55,7 @@ namespace SharOpenXR
                                      int* height) __attribute__((weak));
     void SetPauseCoinVisible(bool visible);
     void DrawPauseCoinIcon();
+    void SetIrisBlackout(bool black);
     void SetEnhancedUiConvergence(bool enabled);
     bool HasEnhancedUiConvergence() __attribute__((weak));
     bool GetEyeCamera(unsigned eye, tCamera* baseCamera,
