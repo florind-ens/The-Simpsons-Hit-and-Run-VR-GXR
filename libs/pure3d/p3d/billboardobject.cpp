@@ -1255,7 +1255,14 @@ void
 tBillboardQuadGroup::Display()
 {
 #if defined(RAD_ANDROID)
-    if(gPglCsmBillboardMode==2) return;
+    // Vehicle::Display enables the batching manager before entering the
+    // composite. During a CSM replay that used to bake the lamp billboard in
+    // the light camera and leave it in the colour-pass queue, producing a
+    // second flare which moved with the VR head. Do not let caster passes
+    // mutate the later transparent queue. Immediate non-batched NO_AXIS
+    // billboards can still participate in depth rendering where required.
+    if(gPglCsmBillboardMode==2 ||
+       (gPglCsmBillboardMode==1 && BillboardQuadManager::sEnabled)) return;
 #endif
     if ( !BillboardQuadManager::sEnabled )
     {
@@ -2927,7 +2934,8 @@ tBillboardQuad* tBillboardQuadGroup::FindQuadByName(const char* name)
 void tBillboardQuadGroup::Display()
 {
 #if defined(RAD_ANDROID)
-    if(gPglCsmBillboardMode==2) return;
+    if(gPglCsmBillboardMode==2 ||
+       (gPglCsmBillboardMode==1 && BillboardQuadManager::sEnabled)) return;
 #endif
     if( noAxisFastPath )
     {

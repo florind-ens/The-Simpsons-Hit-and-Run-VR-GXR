@@ -39,6 +39,7 @@ extern int gPglCsmBillboardMode;
 #if defined(RAD_ANDROID)
 // Kept as a renderer boundary here so game code does not depend on GLES headers.
 void pglSetVehicleDeformation(const float* dents,int count);
+void pglSuppressVehicleRearLights(bool suppress);
 #endif
 #include <p3d/utility.hpp>
 #include <typeinfo>
@@ -1109,6 +1110,51 @@ BEGIN_PROFILE("GeometryVehicle::CompDraw->Disp")
     if( sbDrawVehicle )
     {
 #if defined(RAD_ANDROID)
+        // Emergency-light billboards can cover much of the view from an
+        // in-car VR camera.  Hide authored siren nodes only on the vehicle
+        // occupied by the player.  Preserve animation visibility so external
+        // vehicles and the same car after exit remain unchanged.
+        static const char* sirenNodes[]={
+            "sirenShape","siren1Shape","sirenShape2","siren3Shape",
+            "siren4Shape","siren5Shape","sirenShape6",
+            "siren_red3Shape","siren_red4Shape","siren_red6Shape",
+            "siren_red7Shape","siren_red8Shape","siren_red9Shape",
+            "siren6Shape","sirenShape7","siren8Shape","sirenShape9",
+            "sirenShape10","siren11Shape","sirenShape12","siren13Shape",
+            "sirenShape10NOAX","siren11ShapeNOAX","sirenShape12NOAX",
+            "siren13ShapeNOAX",
+            "sirenLargeShape","sirenLarge1Shape","sirenLarge2Shape",
+            "sirenLargeShape2","sirenLargeShape3","sirenLargeShape4",
+            "sirenLargeShape5","sirenLarge6Shape","sirenLarge7Shape",
+            "sirenLarge1ShapeNOAX","sirenLargeShape2NOAX",
+            "sirenLargeShape3NOAX","sirenLargeShape4NOAX",
+            "sirenLargeShape5NOAX","sirenLarge6ShapeNOAX",
+            "sirenLarge7ShapeNOAX",
+            "sirenSmallShape","sirenSmall1Shape","sirenSmall2Shape",
+            "sirenSmall3Shape","sirenSmall1ShapeAAX",
+            "sirenSmall2ShapeAAX","sirenSmall3ShapeAAX"};
+        enum { MAX_HIDDEN_SIRENS=64 };
+        tCompositeDrawable::DrawableElement* hiddenSirens[MAX_HIDDEN_SIRENS]={NULL};
+        bool hiddenSirenVisibility[MAX_HIDDEN_SIRENS]={false};
+        int hiddenSirenCount=0;
+        const bool hidePlayerSirens=SharOpenXR::IsVrModeEnabled() &&
+                                    mVehicleOwner->IsUserDrivingCar();
+        if(hidePlayerSirens)
+        {
+            for(unsigned siren=0;siren<sizeof(sirenNodes)/sizeof(sirenNodes[0]) &&
+                                      hiddenSirenCount<MAX_HIDDEN_SIRENS;++siren)
+            {
+                tCompositeDrawable::DrawableElement* node=
+                    mCompositeDrawable->FindNode(sirenNodes[siren]);
+                if(node)
+                {
+                    hiddenSirens[hiddenSirenCount]=node;
+                    hiddenSirenVisibility[hiddenSirenCount]=node->IsVisible();
+                    node->SetVisibility(false);
+                    ++hiddenSirenCount;
+                }
+            }
+        }
         // Apply the same unobtrusive glass treatment to every vehicle in VR.
         // The scope is closed immediately so shared shaders retain their
         // normal appearance for non-vehicle rendering and Original mode.
@@ -1118,6 +1164,19 @@ BEGIN_PROFILE("GeometryVehicle::CompDraw->Disp")
         p3dSetVrVehicleDriverSuppressed(suppressEmbeddedDriver);
         p3dSetEnhancedVehicleMaterials(SharOpenXR::IsVrModeEnabled() &&
                                        SharOpenXR::IsEnhancedMaterialsEnabled());
+        // Rear-light volumes still illuminate the road and surrounding world,
+        // but a player vehicle must not receive its own lamps.  Its body is
+        // extremely close to the VR camera, so evaluating these dynamic lights
+        // over it can dominate fragment cost, especially on the plow truck.
+        const bool suppressOwnRearLights=SharOpenXR::IsVrModeEnabled() &&
+                                         mVehicleOwner->IsUserDrivingCar();
+        pglSuppressVehicleRearLights(suppressOwnRearLights);
+        // Select CSM per primitive group during the normal vehicle draw.
+        // Opaque bodywork receives shadows, while translucent glass retains
+        // its legacy shader without requiring a later composite replay.
+        p3dSetCsmIntegratedVehicleReceiver(
+            SharOpenXR::IsVrModeEnabled() && SharOpenXR::IsCsmEnabled() &&
+            gPglCsmBillboardMode==0);
         float dents[16]={0.0f};
         for(int dent=0;dent<mDentCount;++dent)
         {
@@ -1130,10 +1189,14 @@ BEGIN_PROFILE("GeometryVehicle::CompDraw->Disp")
 #endif
         mCompositeDrawable->Display();
 #if defined(RAD_ANDROID)
+        p3dSetCsmIntegratedVehicleReceiver(false);
         p3dSetEnhancedVehicleMaterials(false);
+        pglSuppressVehicleRearLights(false);
         pglSetVehicleDeformation(NULL,0);
         p3dSetVrVehicleDriverSuppressed(false);
         p3dSetVrVehicleGlassFaded(false);
+        for(int siren=0;siren<hiddenSirenCount;++siren)
+            hiddenSirens[siren]->SetVisibility(hiddenSirenVisibility[siren]);
 #endif
     }
     if( !smokeFirst )
@@ -1713,6 +1776,30 @@ void GeometryVehicle::FindHeadLightBillboardJoints()
         for( int i=0; i<VehicleCentral::NUM_HEADLIGHT_BBQGS; i++ )
         {
             rAssert( GetVehicleCentral()->mHeadLights[i] );
+#if defined(RAD_ANDROID)
+            // common.p3d groups 0/1 use LENS02/flarebase2: two monitor-
+            // oriented lens effects which separate in stereo and lag behind
+            // head rotation. Retain only group 2 (glowGroupShape2/glow2), the
+            // actual local lamp glow.
+            if(i!=2) continue;
+            // The original headlight flare offsets itself toward the camera
+            // using each quad's distance. In stereo that produces two
+            // different offsets and the flare appears duplicated or attached
+            // to head movement. Keep it at the lamp joint; the small depth
+            // offset is unnecessary for additive blending.
+            tBillboardQuadGroup* group=GetVehicleCentral()->mHeadLights[i];
+            for(int quadIndex=0;quadIndex<group->GetNumQuads();++quadIndex)
+            {
+                tBillboardQuad* quad=group->GetQuad(quadIndex);
+                quad->SetDistance(0.0f);
+                // A stereo headlight marker must be a world/object-space
+                // plane. Camera-facing modes use the tracked eye transform
+                // while generating CPU vertices and can leave a second image
+                // which follows head rotation in multiview.
+                quad->SetBillboardMode(
+                    p3dBillboardConstants::BillboardMode::NO_AXIS);
+            }
+#endif
             mCompositeDrawable->AddProp( GetVehicleCentral()->mHeadLights[i], left );
         }
     }
@@ -1725,6 +1812,9 @@ void GeometryVehicle::FindHeadLightBillboardJoints()
         for( int i=0; i<VehicleCentral::NUM_HEADLIGHT_BBQGS; i++ )
         {
             rAssert( GetVehicleCentral()->mHeadLights[i] );
+#if defined(RAD_ANDROID)
+            if(i!=2) continue;
+#endif
             mCompositeDrawable->AddProp( GetVehicleCentral()->mHeadLights[i], right );
         }
     }

@@ -122,6 +122,12 @@ protected:
     pglProgram* legacyColorProgram;
     pglProgram* legacyTextureProgram;
     pglProgram* legacyAlphaTestProgram;
+    pglProgram* enhancedColorProgram;
+    pglProgram* enhancedTextureProgram;
+    pglProgram* enhancedAlphaTestProgram;
+    pglProgram* vehicleCsmColorProgram;
+    pglProgram* vehicleCsmTextureProgram;
+    pglProgram* vehicleCsmAlphaTestProgram;
     pglProgram* shadowDepthProgram;
     pglProgram* shadowOverlayProgram;
     pglProgram* particleTextureProgram;

@@ -24,6 +24,7 @@ void pglSetVehicleDeformation(const float* dents, int count);
 const float* pglGetVehicleDeformation();
 int pglGetVehicleDeformationCount();
 void pglSetVehicleRearLights(int mode,int count,const float* positions,const float* directions,const float* colour);
+void pglSuppressVehicleRearLights(bool suppress);
 int pglGetVehicleRearLightMode();
 int pglGetVehicleRearLightCount();
 const float* pglGetVehicleRearLightPositions();

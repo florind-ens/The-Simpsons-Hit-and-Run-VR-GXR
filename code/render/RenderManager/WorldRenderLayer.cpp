@@ -420,6 +420,7 @@ void WorldRenderLayer::Render()
             const bool csmAllowed=SharOpenXR::IsCsmEnabled();
             const radTime64 vrCsmStart=radTimeGetMicroseconds64();
             const float casterHalfWidths[3]={24.0f,56.0f,224.0f};
+            const float casterHalfDepths[3]={64.0f,96.0f,155.0f};
             for(int cascadeIndex=0;csmAllowed && cascadeIndex<3;++cascadeIndex)
             {
                 rmt::Matrix lightWorldToCamera,lightCameraToWorld;
@@ -437,7 +438,7 @@ void WorldRenderLayer::Render()
                                                    cascadeIndex==0,
                                                    lightWorldToCamera,
                                                    casterHalfWidths[cascadeIndex],
-                                                   155.0f);
+                                                   casterHalfDepths[cascadeIndex]);
                     if(cascadeIndex==0)
                     {
                         GetCoinManager()->RenderCsmCasters();
@@ -450,15 +451,11 @@ void WorldRenderLayer::Render()
                             if(character) character->DisplayCsmCaster();
                         }
 
-                        VehicleCentral* vehicles=GetVehicleCentral();
-                        Vehicle** activeVehicles=NULL;
-                        int vehicleCount=0;
-                        if(vehicles) vehicles->GetActiveVehicleList(activeVehicles,vehicleCount);
-                        for(int vehicleIndex=0;vehicleIndex<vehicleCount;++vehicleIndex)
-                        {
-                            Vehicle* vehicle=activeVehicles[vehicleIndex];
-                            if(vehicle) vehicle->Display();
-                        }
+                        // Dynamic vehicles are already present in the world
+                        // scene's CSM caster list.  Replaying the active list
+                        // here submitted every vehicle a second time (the
+                        // player car measured 25 main draws versus 50 CSM
+                        // draws) without adding any shadow information.
                     }
                     VrEndSunShadowMap(p3d::pddi,cascadeIndex,
                         shadowEyeCamera->GetCameraToWorldMatrix());
@@ -587,38 +584,8 @@ void WorldRenderLayer::Render()
             // Shadow receiver replay and every later debug/GUI-adjacent pass
             // must use the original shaders.
             p3dSetEnhancedWorldMaterials(false);
-            if(csmAllowed)
-            {
-                // Vehicles are sorted as translucent because their composite
-                // drawables contain glass, while characters live in mpGuts.
-                // Overlay only their visible solid geometry after the normal
-                // colour pass, without replaying particles or vehicle logic.
-                rmt::Vector receiverCentre(0.0f,0.0f,0.0f);
-                Avatar* receiverAvatar=GetAvatarManager()->GetAvatarForPlayer(0);
-                if(receiverAvatar) receiverAvatar->GetPosition(receiverCentre);
-                const float receiverRadiusSqr=40.0f*40.0f;
-
-                VrBeginSunShadowOverlay(p3d::pddi);
-                p3dSetCsmOpaqueReceiverOnly(true);
-                VehicleCentral* receiverVehicles=GetVehicleCentral();
-                Vehicle** receiverVehicleList=NULL;
-                int receiverVehicleCount=0;
-                if(receiverVehicles)
-                    receiverVehicles->GetActiveVehicleList(receiverVehicleList,
-                                                           receiverVehicleCount);
-                for(int vehicleIndex=0;vehicleIndex<receiverVehicleCount;++vehicleIndex)
-                {
-                    Vehicle* vehicle=receiverVehicleList[vehicleIndex];
-                    if(!vehicle) continue;
-                    rmt::Vector delta=vehicle->rPosition()-receiverCentre;
-                    if(delta.MagnitudeSqr()<=receiverRadiusSqr)
-                        vehicle->DisplayCsmReceiver();
-                }
-                p3dSetCsmOpaqueReceiverOnly(false);
-
-                VrEndSunShadowOverlay(p3d::pddi);
-                VrEnableSunShadowReceivers(p3d::pddi,false);
-            }
+            // Opaque vehicle groups receive CSM in their normal colour draw.
+            // The former composite overlay duplicated every body mesh here.
 #endif
 
             BEGIN_PROFILE( "RenderSparkles" );

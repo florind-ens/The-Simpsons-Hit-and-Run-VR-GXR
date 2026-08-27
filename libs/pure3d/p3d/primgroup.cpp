@@ -21,6 +21,7 @@
 
 #include <string.h>
 #if defined(RAD_ANDROID)
+#include <vr/csmbridge.h>
 void pglSetEnhancedMaterialMode(int mode);
 void pglSetEnhancedSunDirection(float x,float y,float z);
 #endif
@@ -49,6 +50,7 @@ using namespace RadicalMathLibrary;
 static bool gFadeVrVehicleGlass=false;
 static bool gSuppressVrVehicleDriver=false;
 static bool gCsmOpaqueReceiverOnly=false;
+static bool gCsmIntegratedVehicleReceiver=false;
 static bool gEnhancedWorldMaterials=false;
 static bool gEnhancedCharacterMaterials=false;
 static bool gEnhancedVehicleMaterials=false;
@@ -75,6 +77,23 @@ void p3dSetCsmOpaqueReceiverOnly(bool enabled)
 {
     gCsmOpaqueReceiverOnly=enabled;
 }
+
+void p3dSetCsmIntegratedVehicleReceiver(bool enabled)
+{
+    gCsmIntegratedVehicleReceiver=enabled;
+#if defined(RAD_ANDROID)
+    if(!enabled) VrEnableSunShadowReceivers(p3d::pddi,false);
+#endif
+}
+
+#if defined(RAD_ANDROID)
+static void SelectIntegratedVehicleReceiver(tShader* shader)
+{
+    if(gCsmIntegratedVehicleReceiver)
+        VrEnableSunShadowReceivers(p3d::pddi,
+                                   !shader || !shader->mTranslucent);
+}
+#endif
 
 void p3dSetEnhancedWorldMaterials(bool enabled)
 {
@@ -275,6 +294,7 @@ void tPrimGroupOptimised::Display()
     FadeVrVehicleGlass(mShader);
     if(gCsmOpaqueReceiverOnly && mShader && mShader->mTranslucent) return;
 #if defined(RAD_ANDROID)
+    SelectIntegratedVehicleReceiver(mShader);
     pglSetEnhancedMaterialMode(EnhancedMaterialMode(mShader));
 #endif
     P3DASSERT(mBuffer);
@@ -359,6 +379,7 @@ void tPrimGroupSkinnedOptimised::Display()
     FadeVrVehicleGlass(mShader);
     if(gCsmOpaqueReceiverOnly && mShader && mShader->mTranslucent) return;
 #if defined(RAD_ANDROID)
+    SelectIntegratedVehicleReceiver(mShader);
     pglSetEnhancedMaterialMode(EnhancedMaterialMode(mShader));
 #endif
     pddiExtHardwareSkinning* hwSkin = p3d::context->GetHardwareSkinning();
@@ -417,6 +438,7 @@ void tPrimGroupStreamed::Display()
     FadeVrVehicleGlass(mShader);
     if(gCsmOpaqueReceiverOnly && mShader && mShader->mTranslucent) return;
 #if defined(RAD_ANDROID)
+    SelectIntegratedVehicleReceiver(mShader);
     pglSetEnhancedMaterialMode(EnhancedMaterialMode(mShader));
 #endif
     P3DASSERT(mVertexList);
@@ -688,6 +710,7 @@ void tPrimGroupSkinnedPC::Display(void)
 	FadeVrVehicleGlass(mShader);
 	if(gCsmOpaqueReceiverOnly && mShader && mShader->mTranslucent) return;
 #if defined(RAD_ANDROID)
+    SelectIntegratedVehicleReceiver(mShader);
     pglSetEnhancedMaterialMode(EnhancedMaterialMode(mShader));
 #endif
 	pddiPrimBufferStream *stream;

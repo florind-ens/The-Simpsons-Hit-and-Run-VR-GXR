@@ -26,6 +26,7 @@ class pddiPrimBufferStream;
 void p3dSetVrVehicleGlassFaded(bool faded);
 void p3dSetVrVehicleDriverSuppressed(bool suppressed);
 void p3dSetCsmOpaqueReceiverOnly(bool enabled);
+void p3dSetCsmIntegratedVehicleReceiver(bool enabled);
 void p3dSetEnhancedWorldMaterials(bool enabled);
 void p3dSetEnhancedCharacterMaterials(bool enabled);
 void p3dSetEnhancedSunDirection(const rmt::Vector& direction);

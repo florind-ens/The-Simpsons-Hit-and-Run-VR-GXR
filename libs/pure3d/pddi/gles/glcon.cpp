@@ -89,6 +89,12 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
     legacyColorProgram=NULL;
     legacyTextureProgram=NULL;
     legacyAlphaTestProgram=NULL;
+    enhancedColorProgram=NULL;
+    enhancedTextureProgram=NULL;
+    enhancedAlphaTestProgram=NULL;
+    vehicleCsmColorProgram=NULL;
+    vehicleCsmTextureProgram=NULL;
+    vehicleCsmAlphaTestProgram=NULL;
     shadowDepthProgram=NULL;
     shadowOverlayProgram=NULL;
     particleTextureProgram=NULL;
@@ -341,8 +347,8 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
         "varying float pixelLit;\n" \
         "uniform int vehicleRearLightMode; uniform int vehicleRearLightCount; uniform vec3 vehicleRearLightPositions[8]; uniform vec3 vehicleRearLightDirections[8]; uniform vec3 vehicleRearLightColour;\n" \
         "vec3 lightDirection(vec3 p,vec4 l){return normalize(l.xyz-p*l.w);}\n" \
-        "vec3 applyPixelLighting(vec3 base){if(pixelLit<0.5)return base;vec3 N=normalize(paintNormal),V=normalize(-paintPosition),diff=ecm.rgb+acm.rgb*acs.rgb,spec=vec3(0.0);for(int i=0;i<" PDDI_STRINGIZE(PDDI_MAX_LIGHTS) ";++i){if(lights[i].enabled==0)continue;vec3 L=lightDirection(paintPosition,lights[i].position);float ndl=max(dot(N,L),0.0),d=distance(paintPosition,lights[i].position.xyz);vec3 k=lights[i].attenuation;float att=lights[i].position.w!=0.0?1.0/(k.x+k.y*d+k.z*d*d):1.0;diff+=att*ndl*dcm.rgb*lights[i].colour.rgb;if(ndl>0.0){vec3 H=normalize(L+V);spec+=att*pow(max(dot(N,H),0.0),srm)*scm.rgb*lights[i].colour.rgb;}}return base*diff+spec;}\n" \
-        "vec3 applyVehicleRearLights(vec3 base){if(vehicleRearLightMode==0)return base;vec3 N=normalize(paintNormal),add=vec3(0.0);float worldSurface=1.0-step(0.25,abs(paintEnabled-1.0));for(int i=0;i<4;++i){if(i>=vehicleRearLightCount)break;vec3 fromLamp=paintPosition-vehicleRearLightPositions[i];float d2=dot(fromLamp,fromLamp),radius=vehicleRearLightMode==1?5.0:7.0;if(d2>=radius*radius)continue;float d=sqrt(d2);vec3 ray=fromLamp/max(d,0.001);float coneDot=dot(ray,vehicleRearLightDirections[i]);if(coneDot<=0.48)continue;float cone=smoothstep(0.48,0.78,coneDot),fall=1.0-d/radius,nearFade=smoothstep(0.30,0.85,d),facing=0.12+0.88*max(dot(N,-ray),0.0),road=1.0+0.70*max(N.y,0.0),receiver=mix(1.0,1.85,worldSurface);add+=vehicleRearLightColour*fall*fall*nearFade*cone*facing*road*receiver*(vehicleRearLightMode==1?0.736:0.624);}return clamp(base+add,0.0,1.0);}\n"
+        "vec3 applyEnhancedLighting(vec3 base){if(paintEnabled<0.5||paintEnabled>5.5)return base;vec3 N=normalize(paintNormal),V=normalize(-paintPosition);if(pixelLit>0.5){vec3 diff=ecm.rgb+acm.rgb*acs.rgb,spec=vec3(0.0);for(int i=0;i<" PDDI_STRINGIZE(PDDI_MAX_LIGHTS) ";++i){if(lights[i].enabled==0)continue;vec3 D=lights[i].position.xyz-paintPosition*lights[i].position.w;float d=length(D);vec3 L=D/max(d,0.001);float ndl=max(dot(N,L),0.0);vec3 k=lights[i].attenuation;float att=lights[i].position.w!=0.0?1.0/(k.x+k.y*d+k.z*d*d):1.0;diff+=att*ndl*dcm.rgb*lights[i].colour.rgb;if(ndl>0.0){vec3 H=normalize(L+V);spec+=att*pow(max(dot(N,H),0.0),srm)*scm.rgb*lights[i].colour.rgb;}}base=base*diff+spec;}float car=1.0-step(0.25,abs(paintEnabled-2.0)),chr=1.0-step(0.25,abs(paintEnabled-3.0)),rough=1.0-step(0.25,abs(paintEnabled-4.0)),metal=1.0-step(0.25,abs(paintEnabled-5.0));vec3 L=normalize(enhancedSunDirection),H=normalize(L+V);float ndl=max(dot(N,L),0.0),sp=0.055+0.32*car+0.055*chr-0.035*rough+0.41*metal,sh=12.0+26.0*car+10.0*chr-3.0*rough+36.0*metal,spec=step(0.0001,ndl)*pow(max(dot(N,H),0.0),sh)*sp,ft=1.0-clamp(dot(N,V),0.0,1.0),f=ft*ft*ft*ft*ft,refl=0.10*car+0.24*metal;return clamp(base*(0.92+0.16*ndl)+vec3(spec)+vec3(0.16,0.20,0.28)*f*refl,0.0,1.0);}\n" \
+        "vec3 applyVehicleRearLights(vec3 base){if(vehicleRearLightMode==0||paintEnabled<0.5)return base;vec3 N=normalize(paintNormal),add=vec3(0.0);float worldSurface=max(1.0-step(0.25,abs(paintEnabled-1.0)),1.0-step(0.25,abs(paintEnabled-6.0)));for(int i=0;i<4;++i){if(i>=vehicleRearLightCount)break;vec3 fromLamp=paintPosition-vehicleRearLightPositions[i];float d2=dot(fromLamp,fromLamp),radius=vehicleRearLightMode==1?5.0:7.0;if(d2>=radius*radius)continue;float d=sqrt(d2);vec3 ray=fromLamp/max(d,0.001);float coneDot=dot(ray,vehicleRearLightDirections[i]);if(coneDot<=0.48)continue;float cone=smoothstep(0.48,0.78,coneDot),fall=1.0-d/radius,nearFade=smoothstep(0.30,0.85,d),facing=0.12+0.88*max(dot(N,-ray),0.0),road=1.0+0.70*max(N.y,0.0),receiver=mix(1.0,1.85,worldSurface);add+=vehicleRearLightColour*fall*fall*nearFade*cone*facing*road*receiver*(vehicleRearLightMode==1?0.736:0.624);}return clamp(base+add,0.0,1.0);}\n"
 
     GLuint fragmentShader = pglProgram::CompileShader( GL_FRAGMENT_SHADER,
         "precision highp float;\n"
@@ -354,11 +360,9 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
         "uniform vec4 acs; uniform vec4 acm; uniform vec4 dcm; uniform vec4 ecm; uniform vec4 scm; uniform float srm; uniform vec3 enhancedSunDirection;\n"
         PGL_CSM_FRAGMENT
         PGL_PIXEL_LIGHTING
-        "vec3 phongPaint(vec3 base){if(paintEnabled<0.5)return base;float car=1.0-step(0.25,abs(paintEnabled-2.0)),chr=1.0-step(0.25,abs(paintEnabled-3.0)),rough=1.0-step(0.25,abs(paintEnabled-4.0)),metal=1.0-step(0.25,abs(paintEnabled-5.0));vec3 N=normalize(paintNormal),V=normalize(-paintPosition),L=normalize(enhancedSunDirection),H=normalize(L+V);float ndl=max(dot(N,L),0.0),sp=0.055+0.32*car+0.055*chr-0.035*rough+0.41*metal,sh=12.0+26.0*car+10.0*chr-3.0*rough+36.0*metal,spec=step(0.0001,ndl)*pow(max(dot(N,H),0.0),sh)*sp,ft=1.0-clamp(dot(N,V),0.0,1.0),f=ft*ft*ft*ft*ft,refl=0.10*car+0.24*metal;return clamp(base*(0.92+0.16*ndl)+vec3(spec)+vec3(0.16,0.20,0.28)*f*refl,0.0,1.0);}\n"
         "void main() {\n"
         "    vec4 c = cpri + csec;\n"
-        "    c.rgb = applyPixelLighting(c.rgb);\n"
-        "    c.rgb = phongPaint(c.rgb);\n"
+        "    c.rgb = applyEnhancedLighting(c.rgb);\n"
         "    float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));\n"
         "    vec3 graded=clamp(mix(vec3(l),c.rgb,1.25),0.0,1.0); c.rgb=graded*graded;\n"
         "    c.rgb *= 1.0-0.58*csmShadow();\n"
@@ -377,14 +381,12 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
         "uniform vec4 acs; uniform vec4 acm; uniform vec4 dcm; uniform vec4 ecm; uniform vec4 scm; uniform float srm; uniform vec3 enhancedSunDirection;\n"
         PGL_CSM_FRAGMENT
         PGL_PIXEL_LIGHTING
-        "vec3 phongPaint(vec3 base){if(paintEnabled<0.5)return base;float car=1.0-step(0.25,abs(paintEnabled-2.0)),chr=1.0-step(0.25,abs(paintEnabled-3.0)),rough=1.0-step(0.25,abs(paintEnabled-4.0)),metal=1.0-step(0.25,abs(paintEnabled-5.0));vec3 N=normalize(paintNormal),V=normalize(-paintPosition),L=normalize(enhancedSunDirection),H=normalize(L+V);float ndl=max(dot(N,L),0.0),sp=0.055+0.32*car+0.055*chr-0.035*rough+0.41*metal,sh=12.0+26.0*car+10.0*chr-3.0*rough+36.0*metal,spec=step(0.0001,ndl)*pow(max(dot(N,H),0.0),sh)*sp,ft=1.0-clamp(dot(N,V),0.0,1.0),f=ft*ft*ft*ft*ft,refl=0.10*car+0.24*metal;return clamp(base*(0.92+0.16*ndl)+vec3(spec)+vec3(0.16,0.20,0.28)*f*refl,0.0,1.0);}\n"
 
         "uniform sampler2D tex;\n"
 
         "void main() {\n"
         "    vec4 c = texture2D(tex, tc) * cpri + csec;\n"
-        "    c.rgb = applyPixelLighting(c.rgb);\n"
-        "    c.rgb = phongPaint(c.rgb);\n"
+        "    c.rgb = applyEnhancedLighting(c.rgb);\n"
         "    float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));\n"
         "    vec3 graded=clamp(mix(vec3(l),c.rgb,1.25),0.0,1.0); c.rgb=graded*graded;\n"
         "    c.rgb *= 1.0-0.58*csmShadow();\n"
@@ -403,7 +405,6 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
         "uniform vec4 acs; uniform vec4 acm; uniform vec4 dcm; uniform vec4 ecm; uniform vec4 scm; uniform float srm; uniform vec3 enhancedSunDirection;\n"
         PGL_CSM_FRAGMENT
         PGL_PIXEL_LIGHTING
-        "vec3 phongPaint(vec3 base){if(paintEnabled<0.5)return base;float car=1.0-step(0.25,abs(paintEnabled-2.0)),chr=1.0-step(0.25,abs(paintEnabled-3.0)),rough=1.0-step(0.25,abs(paintEnabled-4.0)),metal=1.0-step(0.25,abs(paintEnabled-5.0));vec3 N=normalize(paintNormal),V=normalize(-paintPosition),L=normalize(enhancedSunDirection),H=normalize(L+V);float ndl=max(dot(N,L),0.0),sp=0.055+0.32*car+0.055*chr-0.035*rough+0.41*metal,sh=12.0+26.0*car+10.0*chr-3.0*rough+36.0*metal,spec=step(0.0001,ndl)*pow(max(dot(N,H),0.0),sh)*sp,ft=1.0-clamp(dot(N,V),0.0,1.0),f=ft*ft*ft*ft*ft,refl=0.10*car+0.24*metal;return clamp(base*(0.92+0.16*ndl)+vec3(spec)+vec3(0.16,0.20,0.28)*f*refl,0.0,1.0);}\n"
 
         "uniform float alpharef;\n"
         "uniform sampler2D tex;\n"
@@ -411,16 +412,37 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
         "void main() {\n"
         "    vec4 c = texture2D(tex, tc) * cpri + csec;\n"
         "    if (c.a < alpharef) discard;\n"
-        "    c.rgb = applyPixelLighting(c.rgb);\n"
+        "    c.rgb = applyEnhancedLighting(c.rgb);\n"
         // Do not illuminate alpha-tested lamp billboards/decals: adding RGB to
         // their low-alpha texels exposes the underlying rectangular polygons.
-        "    c.rgb = phongPaint(c.rgb);\n"
         "    float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));\n"
         "    vec3 graded=clamp(mix(vec3(l),c.rgb,1.25),0.0,1.0); c.rgb=graded*graded;\n"
         "    c.rgb *= 1.0-0.58*csmShadow();\n"
         "    gl_FragColor = c;\n"
         "}\n"
     );
+
+    // Vehicle + CSM specialization. Vehicle lighting is already evaluated in
+    // the vertex stage, so this variant omits the generic per-pixel light loop
+    // and all local/rear-light arrays. Profile 7 is used by the screen-filling
+    // player vehicle and avoids a per-fragment view-vector normalization.
+#define PGL_VEHICLE_CSM_COMMON \
+        "precision highp float;varying vec2 tc;varying vec4 cpri,csec;varying vec3 paintNormal;varying highp vec3 paintPosition;varying float paintEnabled;uniform vec3 enhancedSunDirection;" \
+        PGL_CSM_FRAGMENT \
+        "float p38(float x){float x2=x*x,x4=x2*x2,x8=x4*x4,x16=x8*x8,x32=x16*x16;return x32*x4*x2;}" \
+        "float p16(float x){float x2=x*x,x4=x2*x2,x8=x4*x4;return x8*x8;}" \
+        "vec3 carPaint(vec3 base){vec3 N=normalize(paintNormal),L=enhancedSunDirection;float ndl=max(dot(N,L),0.0);if(paintEnabled>6.5){vec3 Hn=L+vec3(0.0,0.0,1.0);float spec=p16(max(dot(N,Hn)*0.62,0.0))*0.30,ft=1.0-clamp(N.z,0.0,1.0),f=ft*ft*ft*ft*ft;return clamp(base*(0.92+0.16*ndl)+vec3(spec)+vec3(0.016,0.020,0.028)*f,0.0,1.0);}vec3 V=normalize(-paintPosition),H=normalize(L+V);float spec=p38(max(dot(N,H),0.0))*0.375,ft=1.0-clamp(dot(N,V),0.0,1.0),f=ft*ft*ft*ft*ft;return clamp(base*(0.92+0.16*ndl)+vec3(spec)+vec3(0.016,0.020,0.028)*f,0.0,1.0);}" \
+        "vec3 grade(vec3 c){float l=dot(c,vec3(0.2126,0.7152,0.0722));c=clamp(mix(vec3(l),c,1.25),0.0,1.0);return c*c;}"
+    GLuint vehicleCsmColorFS=pglProgram::CompileShader(GL_FRAGMENT_SHADER,
+        PGL_VEHICLE_CSM_COMMON
+        "void main(){vec4 c=cpri+csec;c.rgb=grade(carPaint(c.rgb))*(1.0-0.58*csmShadow());gl_FragColor=c;}");
+    GLuint vehicleCsmTextureFS=pglProgram::CompileShader(GL_FRAGMENT_SHADER,
+        PGL_VEHICLE_CSM_COMMON
+        "uniform sampler2D tex;void main(){vec4 c=texture2D(tex,tc)*cpri+csec;c.rgb=grade(carPaint(c.rgb))*(1.0-0.58*csmShadow());gl_FragColor=c;}");
+    GLuint vehicleCsmAlphaFS=pglProgram::CompileShader(GL_FRAGMENT_SHADER,
+        PGL_VEHICLE_CSM_COMMON
+        "uniform sampler2D tex;uniform float alpharef;void main(){vec4 c=texture2D(tex,tc)*cpri+csec;if(c.a<alpharef)discard;c.rgb=grade(carPaint(c.rgb))*(1.0-0.58*csmShadow());gl_FragColor=c;}");
+#undef PGL_VEHICLE_CSM_COMMON
 
     // The feature-rich programs above preserve CSM, enhanced materials and
     // local vehicle lights.  Uniform branches are not a free substitute for
@@ -447,6 +469,30 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
         "void main(){vec4 c=texture2D(tex,tc)*cpri+csec;if(c.a<alpharef)discard;"
         "float l=dot(c.rgb,vec3(0.2126,0.7152,0.0722));c.rgb=clamp(mix(vec3(l),c.rgb,1.25),0.0,1.0);"
         "c.rgb*=c.rgb;gl_FragColor=c;}\n");
+
+    // Compact enhanced-only variants.  They deliberately contain neither CSM
+    // samplers nor vehicle rear-light arrays, allowing the linker to remove
+    // four shadow varyings and the local-light state for draws which need only
+    // improved materials.  Lighting and paint share N/V instead of normalizing
+    // them independently in two functions.
+#define PGL_ENHANCED_ONLY_COMMON \
+        "precision highp float; varying vec2 tc; varying vec4 cpri,csec; varying vec3 paintNormal; varying highp vec3 paintPosition; varying float paintEnabled,pixelLit;" \
+        "uniform struct LightParams{int enabled;vec4 position;vec4 colour;vec3 attenuation;}lights[" PDDI_STRINGIZE(PDDI_MAX_LIGHTS) "];" \
+        "uniform vec4 acs,acm,dcm,ecm,scm;uniform float srm;uniform vec3 enhancedSunDirection;" \
+        "vec3 enhancedLight(vec3 base){if(paintEnabled<0.5)return base;vec3 N=normalize(paintNormal),V=normalize(-paintPosition);" \
+        "if(pixelLit>0.5){vec3 diff=ecm.rgb+acm.rgb*acs.rgb,spec=vec3(0.0);for(int i=0;i<" PDDI_STRINGIZE(PDDI_MAX_LIGHTS) ";++i){if(lights[i].enabled==0)continue;vec3 D=lights[i].position.xyz-paintPosition*lights[i].position.w;float d=length(D);vec3 L=D/max(d,0.001);float ndl=max(dot(N,L),0.0);vec3 k=lights[i].attenuation;float att=lights[i].position.w!=0.0?1.0/(k.x+k.y*d+k.z*d*d):1.0;diff+=att*ndl*dcm.rgb*lights[i].colour.rgb;if(ndl>0.0){vec3 H=normalize(L+V);spec+=att*pow(max(dot(N,H),0.0),srm)*scm.rgb*lights[i].colour.rgb;}}base=base*diff+spec;}" \
+        "float car=1.0-step(0.25,abs(paintEnabled-2.0)),chr=1.0-step(0.25,abs(paintEnabled-3.0)),rough=1.0-step(0.25,abs(paintEnabled-4.0)),metal=1.0-step(0.25,abs(paintEnabled-5.0));vec3 L=normalize(enhancedSunDirection),H=normalize(L+V);float ndl=max(dot(N,L),0.0),sp=0.055+0.32*car+0.055*chr-0.035*rough+0.41*metal,sh=12.0+26.0*car+10.0*chr-3.0*rough+36.0*metal,spec=step(0.0001,ndl)*pow(max(dot(N,H),0.0),sh)*sp,ft=1.0-clamp(dot(N,V),0.0,1.0),f=ft*ft*ft*ft*ft,refl=0.10*car+0.24*metal;return clamp(base*(0.92+0.16*ndl)+vec3(spec)+vec3(0.16,0.20,0.28)*f*refl,0.0,1.0);}" \
+        "vec3 grade(vec3 c){float l=dot(c,vec3(0.2126,0.7152,0.0722));c=clamp(mix(vec3(l),c,1.25),0.0,1.0);return c*c;}"
+    GLuint enhancedColorFS=pglProgram::CompileShader(GL_FRAGMENT_SHADER,
+        PGL_ENHANCED_ONLY_COMMON
+        "void main(){vec4 c=cpri+csec;c.rgb=grade(enhancedLight(c.rgb));gl_FragColor=c;}");
+    GLuint enhancedTextureFS=pglProgram::CompileShader(GL_FRAGMENT_SHADER,
+        PGL_ENHANCED_ONLY_COMMON
+        "uniform sampler2D tex;void main(){vec4 c=texture2D(tex,tc)*cpri+csec;c.rgb=grade(enhancedLight(c.rgb));gl_FragColor=c;}");
+    GLuint enhancedAlphaFS=pglProgram::CompileShader(GL_FRAGMENT_SHADER,
+        PGL_ENHANCED_ONLY_COMMON
+        "uniform sampler2D tex;uniform float alpharef;void main(){vec4 c=texture2D(tex,tc)*cpri+csec;if(c.a<alpharef)discard;c.rgb=grade(enhancedLight(c.rgb));gl_FragColor=c;}");
+#undef PGL_ENHANCED_ONLY_COMMON
 #undef PGL_PIXEL_LIGHTING
 #undef PGL_CSM_FRAGMENT
 #endif
@@ -460,6 +506,12 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
     legacyColorProgram=pglProgram::CreateProgram(vertexShader,legacyColorFS);
     legacyTextureProgram=pglProgram::CreateProgram(vertexShader,legacyTextureFS);
     legacyAlphaTestProgram=pglProgram::CreateProgram(vertexShader,legacyAlphaFS);
+    enhancedColorProgram=pglProgram::CreateProgram(vertexShader,enhancedColorFS);
+    enhancedTextureProgram=pglProgram::CreateProgram(vertexShader,enhancedTextureFS);
+    enhancedAlphaTestProgram=pglProgram::CreateProgram(vertexShader,enhancedAlphaFS);
+    vehicleCsmColorProgram=pglProgram::CreateProgram(vertexShader,vehicleCsmColorFS);
+    vehicleCsmTextureProgram=pglProgram::CreateProgram(vertexShader,vehicleCsmTextureFS);
+    vehicleCsmAlphaTestProgram=pglProgram::CreateProgram(vertexShader,vehicleCsmAlphaFS);
     // Alpha-blended effects never receive CSM or enhanced-material lighting.
     // Keeping their fragment stage free of those large dynamic branches is
     // essential for smoke, whose overlapping sprites are fill-rate bound.
@@ -470,6 +522,12 @@ pglContext::pglContext(pglDevice* dev, pglDisplay* disp) : pddiBaseContext((pddi
     glDeleteShader(legacyColorFS);
     glDeleteShader(legacyTextureFS);
     glDeleteShader(legacyAlphaFS);
+    glDeleteShader(enhancedColorFS);
+    glDeleteShader(enhancedTextureFS);
+    glDeleteShader(enhancedAlphaFS);
+    glDeleteShader(vehicleCsmColorFS);
+    glDeleteShader(vehicleCsmTextureFS);
+    glDeleteShader(vehicleCsmAlphaFS);
 
     GLuint shadowVS=pglProgram::CompileShader(GL_VERTEX_SHADER,
         "precision highp float; attribute vec3 position; attribute vec2 texcoord; uniform mat4 projection; uniform mat4 modelview; uniform int vehicleDentCount; uniform vec4 vehicleDents[4]; varying vec2 tc; vec3 deform(vec3 p){for(int i=0;i<4;++i){if(i>=vehicleDentCount)break;vec4 d=vehicleDents[i];float r=1.20+d.w*0.65,f=max(0.0,1.0-length(p-d.xyz)/r);f=f*f*(3.0-2.0*f);p+=normalize(-d.xyz+vec3(0.0,0.20,0.0))*(d.w*f);}return p;} void main(){tc=texcoord;gl_Position=projection*modelview*vec4(deform(position),1.0);}");
@@ -516,6 +574,12 @@ pglContext::~pglContext()
     if(legacyColorProgram) legacyColorProgram->Release();
     if(legacyTextureProgram) legacyTextureProgram->Release();
     if(legacyAlphaTestProgram) legacyAlphaTestProgram->Release();
+    if(enhancedColorProgram) enhancedColorProgram->Release();
+    if(enhancedTextureProgram) enhancedTextureProgram->Release();
+    if(enhancedAlphaTestProgram) enhancedAlphaTestProgram->Release();
+    if(vehicleCsmColorProgram) vehicleCsmColorProgram->Release();
+    if(vehicleCsmTextureProgram) vehicleCsmTextureProgram->Release();
+    if(vehicleCsmAlphaTestProgram) vehicleCsmAlphaTestProgram->Release();
 #endif
     defaultShader->Release();
     currentProgram->Release();
@@ -1714,9 +1778,21 @@ void pglContext::SetTextureEnvironment(const pglTextureEnv* texEnv)
         return;
     }
 #endif
+    // World profile 1 is useful only for materials authored as lit.  Sending
+    // unlit decals/emissive props through the enhanced fragment path adds a
+    // per-pixel normal/view/specular calculation without meaningful input.
+    const int requestedMaterialMode=pglGetEnhancedMaterialMode();
+    const int effectiveMaterialMode=(requestedMaterialMode==1 && !texEnv->lit)?
+                                    0:requestedMaterialMode;
     const bool useLegacyProgram=!shadowReceiverEnabled &&
-                                pglGetEnhancedMaterialMode()==0 &&
+                                effectiveMaterialMode==0 &&
                                 pglGetVehicleRearLightMode()==0;
+    const bool useEnhancedOnlyProgram=!shadowReceiverEnabled &&
+                                      effectiveMaterialMode>0 &&
+                                      pglGetVehicleRearLightMode()==0;
+    const bool useVehicleCsmProgram=shadowReceiverEnabled &&
+                                    effectiveMaterialMode==2 &&
+                                    pglGetVehicleRearLightMode()==0;
     if(texEnv->texture)
     {
         if(pglIsParticleRendering() && !texEnv->alphaTest)
@@ -1724,11 +1800,19 @@ void pglContext::SetTextureEnvironment(const pglTextureEnv* texEnv)
         else if(useLegacyProgram)
             SetShaderProgram(texEnv->alphaTest?legacyAlphaTestProgram:
                                                legacyTextureProgram);
+        else if(useEnhancedOnlyProgram)
+            SetShaderProgram(texEnv->alphaTest?enhancedAlphaTestProgram:
+                                               enhancedTextureProgram);
+        else if(useVehicleCsmProgram)
+            SetShaderProgram(texEnv->alphaTest?vehicleCsmAlphaTestProgram:
+                                               vehicleCsmTextureProgram);
         else
             SetShaderProgram(texEnv->alphaTest?alphaTestProgram:textureProgram);
     }
     else
-        SetShaderProgram(useLegacyProgram?legacyColorProgram:colorProgram);
+        SetShaderProgram(useLegacyProgram?legacyColorProgram:
+                         useEnhancedOnlyProgram?enhancedColorProgram:
+                         useVehicleCsmProgram?vehicleCsmColorProgram:colorProgram);
     if(!currentProgram)
     {
         // A shader compiler failure must never turn into a null dereference
@@ -1753,8 +1837,10 @@ bool pglContext::BeginSunShadowMap(int cascadeIndex,const pddiMatrix& eyeCameraT
     if(cascadeIndex<0 || cascadeIndex>=SHADOW_CASCADE_COUNT) return false;
     static const int cascadeSizes[SHADOW_CASCADE_COUNT]={2048,2048,1024};
     static const float cascadeHalfWidths[SHADOW_CASCADE_COUNT]={24.0f,56.0f,224.0f};
+    static const float cascadeHalfDepths[SHADOW_CASCADE_COUNT]={64.0f,96.0f,155.0f};
     const int shadowSize=cascadeSizes[cascadeIndex];
     const float halfWidth=cascadeHalfWidths[cascadeIndex];
+    const float halfDepth=cascadeHalfDepths[cascadeIndex];
     // The right eye reuses the map, but needs its own eye-space to light-space
     // conversion because modelview vertices are already in eye space.
     if(shadowRenderedThisFrame[cascadeIndex])
@@ -1838,7 +1924,12 @@ bool pglContext::BeginSunShadowMap(int cascadeIndex,const pddiMatrix& eyeCameraT
         // Quest exposes GLES 3.2: use a genuine depth-only target to avoid the
         // bandwidth and storage of a discarded RGB565 colour attachment.
         // Retain the old attachment as a runtime fallback for other drivers.
-        bool depthOnly=false;
+        // GLES permits a framebuffer with only a depth attachment. Accept the
+        // driver's completed framebuffer directly; glDrawBuffers/glReadBuffer
+        // are optional here and this project's GLAD table does not expose
+        // their GLES core entry points on Quest even though GLES 3.2 does.
+        bool depthOnly=attachStatus==GL_FRAMEBUFFER_COMPLETE &&
+                       attachError==GL_NO_ERROR;
         GLenum drawStatus=attachStatus,drawError=GL_NO_ERROR;
         GLenum readStatus=attachStatus,readError=GL_NO_ERROR;
         if(glDrawBuffers && glReadBuffer)
@@ -1850,7 +1941,7 @@ bool pglContext::BeginSunShadowMap(int cascadeIndex,const pddiMatrix& eyeCameraT
             glReadBuffer(GL_NONE);
             readError=glGetError();
             readStatus=glCheckFramebufferStatus(GL_FRAMEBUFFER);
-            depthOnly=readStatus==GL_FRAMEBUFFER_COMPLETE &&
+            depthOnly=depthOnly && readStatus==GL_FRAMEBUFFER_COMPLETE &&
                       drawError==GL_NO_ERROR && readError==GL_NO_ERROR;
         }
         SDL_Log("VR CSM depth-only probe c%d: attach=0x%x/e0x%x draw=0x%x/e0x%x read=0x%x/e0x%x funcs=%d",
@@ -1953,7 +2044,11 @@ bool pglContext::BeginSunShadowMap(int cascadeIndex,const pddiMatrix& eyeCameraT
     // cells. Without Identity() the clip matrix contains stack garbage and
     // every caster can be clipped before rasterization.
     lightProjection.Identity();
-    lightProjection.SetOrthographic(-halfWidth,halfWidth,-halfWidth,halfWidth,-155.0f,155.0f);
+    // Keep the light-depth volume proportional to each cascade. The previous
+    // +/-155 m interval made the 48 m near map accept distant dynamic objects
+    // along the sun axis that cannot cast a useful local shadow.
+    lightProjection.SetOrthographic(-halfWidth,halfWidth,-halfWidth,halfWidth,
+                                    -halfDepth,halfDepth);
     shadowWorldToClip[cascadeIndex].Mult(*lightWorldToCamera,lightProjection);
 
     // CSM is a mono offscreen pass even while the world target is multiview.

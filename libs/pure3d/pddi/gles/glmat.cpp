@@ -20,6 +20,7 @@ static float gVehicleDeformation[16]={0.0f};
 static int gVehicleDeformationCount=0;
 static int gVehicleRearLightMode=0;
 static int gVehicleRearLightCount=0;
+static bool gVehicleRearLightsSuppressed=false;
 static float gVehicleRearLightPositions[24]={0.0f};
 static float gVehicleRearLightDirections[24]={0.0f};
 static float gVehicleRearLightColour[3]={1.0f,0.04f,0.02f};
@@ -45,8 +46,9 @@ void pglSetVehicleRearLights(int mode,int count,const float* positions,const flo
     for(int i=0;i<24;++i) gVehicleRearLightDirections[i]=directions?directions[i]:0.0f;
     for(int i=0;i<3;++i) gVehicleRearLightColour[i]=colour?colour[i]:0.0f;
 }
-int pglGetVehicleRearLightMode(){ return gVehicleRearLightMode; }
-int pglGetVehicleRearLightCount(){ return gVehicleRearLightCount; }
+void pglSuppressVehicleRearLights(bool suppress){ gVehicleRearLightsSuppressed=suppress; }
+int pglGetVehicleRearLightMode(){ return gVehicleRearLightsSuppressed?0:gVehicleRearLightMode; }
+int pglGetVehicleRearLightCount(){ return gVehicleRearLightsSuppressed?0:gVehicleRearLightCount; }
 const float* pglGetVehicleRearLightPositions(){ return gVehicleRearLightPositions; }
 const float* pglGetVehicleRearLightDirections(){ return gVehicleRearLightDirections; }
 const float* pglGetVehicleRearLightColour(){ return gVehicleRearLightColour; }

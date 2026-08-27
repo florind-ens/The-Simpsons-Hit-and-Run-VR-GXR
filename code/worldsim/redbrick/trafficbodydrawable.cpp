@@ -1,9 +1,6 @@
 #include <worldsim/redbrick/trafficbodydrawable.h>
 #include <p3d/shader.hpp>
 #include <debug/profiler.h>
-#if defined(RAD_ANDROID)
-#include <vr/openxrmanager.h>
-#endif
 
 TrafficBodyDrawable::TrafficBodyDrawable()
 {
@@ -63,15 +60,6 @@ void TrafficBodyDrawable::Display()
             mBodyShader->SetInt( PDDI_SP_EMISSIVEALPHA, mFadeAlpha );
             mBodyPropDrawable->Display();
 
-#if defined(RAD_ANDROID)
-            // Enhanced vehicle materials already provide the paint highlight
-            // on Quest.  Re-submitting the same traffic body through the
-            // alpha-test program while a layered framebuffer is active can
-            // leave the body absent even though its separately drawn wheels
-            // remain visible.  Keep the legacy overlay for dual-pass and
-            // non-VR rendering only.
-            if( !SharOpenXR::IsMultiviewRendering() )
-#endif
             {
                 pddiColour white( 255,255,255,255 );
                 mBodyShader->SetColour( PDDI_SP_DIFFUSE, white );

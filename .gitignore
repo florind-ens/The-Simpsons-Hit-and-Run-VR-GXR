@@ -43,6 +43,11 @@ APKs/
 *.tmp
 *.bak
 
+# Local device profiling/cache artifacts
+binary_cache/
+**/__pycache__/
+*.pyc
+
 
 # OS files
 .DS_Store

@@ -65,8 +65,8 @@ static bool MakeHardwarePcf(std::string& s)
     ReplaceAll(s,"uniform sampler2D shadowTex1;","uniform highp sampler2DShadow shadowTex1;");
     ReplaceAll(s,"uniform sampler2D shadowTex2;","uniform highp sampler2DShadow shadowTex2;");
 
-    // Replace the complete manual 4-fetch bilinear helpers. A linearly
-    // filtered comparison sampler performs the same 2x2 PCF in one lookup.
+    // Replace the complete manual 4-fetch bilinear helpers. The comparison
+    // sampler performs the driver's filtered 2x2 PCF in one shader lookup.
     size_t begin=s.find("highp float csmC0(");
     size_t end=s.find("bool csmValid(",begin);
     if(begin!=std::string::npos && end!=std::string::npos)
@@ -269,6 +269,16 @@ void pglProgram::SetTextureEnvironment(const pglTextureEnv* texEnv)
     // Alpha-tested fences and grates keep opaque surviving pixels. Their
     // fragment program discards the holes before applying Phong.
     int materialMode=pglGetEnhancedMaterialMode();
+    // Profile 1 is the broad world-material scope.  Unlit materials have no
+    // useful lighting inputs and commonly cover large screen areas, so leave
+    // them on their original inexpensive path.  Explicit vehicle/character
+    // profiles remain untouched.
+    if(materialMode==1 && !texEnv->lit)
+    {
+        // Receiver-only profile: keep expensive enhanced material lighting
+        // disabled, but retain world position/normal for vehicle lamp cones.
+        materialMode=pglGetVehicleRearLightMode()!=0 ? 6 : 0;
+    }
     if(materialMode>0)
     {
         static bool loggedModes[6]={false,false,false,false,false,false};
