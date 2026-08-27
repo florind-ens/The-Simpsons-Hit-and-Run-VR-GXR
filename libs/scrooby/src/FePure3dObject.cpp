@@ -30,10 +30,16 @@
 #include "ResourceManager/FeResourceManager.h"
 #if defined(RAD_ANDROID)
 #include <vr/openxrmanager.h>
+#include <gameflow/gameflow.h>
 static Scrooby::Pure3dObject* gVrIrisPure3dObject=NULL;
+static Scrooby::Pure3dObject* gVrFrontendWorldPure3dObject=NULL;
 void ScroobySetVrIrisPure3dObject(Scrooby::Pure3dObject* object)
 {
     gVrIrisPure3dObject=object;
+}
+void ScroobySetVrFrontendWorldPure3dObject(Scrooby::Pure3dObject* object)
+{
+    gVrFrontendWorldPure3dObject=object;
 }
 #endif
 
@@ -399,6 +405,21 @@ void FePure3dObject::Render()
             }
         }
 
+#if defined(RAD_ANDROID)
+        // The main-menu world controller is safe to seek only here, after the
+        // resource manager has supplied its camera, drawable and tracks. The
+        // intro window can observe the shared controller earlier than this.
+        if( SharOpenXR::IsVrModeEnabled() &&
+            static_cast<Scrooby::Pure3dObject*>(this) ==
+                gVrFrontendWorldPure3dObject &&
+            m_Camera != NULL && m_MultiController != NULL )
+        {
+            m_MultiController->SetFrameRange( 721.0f, 770.0f );
+            m_MultiController->Reset();
+            m_MultiController->SetFrame( 770.0f );
+        }
+#endif
+
         // add default light, if exists
         //
         if( m_DefaultLight != NULL )
@@ -415,6 +436,21 @@ void FePure3dObject::Render()
         //
         return;
     }
+
+#if defined(RAD_ANDROID)
+    // Frontend Scrooby pages mix the authored 3D living-room scene with the
+    // 2D menu in one draw tree. Render this Pure3D node through the real eye
+    // cameras, then restore the world-locked panel projection for subsequent
+    // text, sprites and buttons. Pause/HUD Pure3D widgets retain their existing
+    // paths because only CONTEXT_FRONTEND uses this split.
+    const bool vrFrontendWorld =
+        GetGameFlow()->GetCurrentContext() == CONTEXT_FRONTEND &&
+        SharOpenXR::IsFrontendPlaneRendering();
+    if( vrFrontendWorld )
+    {
+        SharOpenXR::SetFrontendPlaneRendering( false );
+    }
+#endif
 
     // clear the depth buffer, if enabled
     //
@@ -598,6 +634,10 @@ void FePure3dObject::Render()
     //
 #if defined(RAD_ANDROID)
     if(suppressVrIris)p3d::pddi->SetZWrite(oldZWrite);
+    if(vrFrontendWorld)
+    {
+        SharOpenXR::SetFrontendPlaneRendering( true );
+    }
 #endif
     p3d::pddi->SetColourWrite( true, true, true, true );
 

@@ -51,6 +51,7 @@
 #include <Pure3dObject.h>
 #if defined(RAD_ANDROID)
 #include <vr/openxrmanager.h>
+extern void ScroobySetVrFrontendWorldPure3dObject(Scrooby::Pure3dObject* object);
 #endif
 #include <Screen.h>
 #include <Text.h>
@@ -171,6 +172,9 @@ CGuiScreenMainMenu::CGuiScreenMainMenu
     m_tvFrame( NULL )
 {
 MEMTRACK_PUSH_GROUP( "CGUIScreenMainMenu" );
+#if defined(RAD_ANDROID)
+    ScroobySetVrFrontendWorldPure3dObject( m_p3dObject );
+#endif
     memset( m_glowingItems, 0, sizeof( m_glowingItems ) );
 
     // Retrieve the Scrooby drawing elements.
@@ -360,6 +364,9 @@ MEMTRACK_POP_GROUP( "CGUIScreenMainMenu" );
 //===========================================================================
 CGuiScreenMainMenu::~CGuiScreenMainMenu()
 {
+#if defined(RAD_ANDROID)
+    ScroobySetVrFrontendWorldPure3dObject( NULL );
+#endif
     if( m_nextGagIndex == -1 )
     {
         // stop any FE gag dialog that was triggered and may still be playing
@@ -476,10 +483,20 @@ void CGuiScreenMainMenu::HandleMessage
 #endif
     }
 
-    if( m_firstTimeEntered &&
-        message == GUI_MSG_WINDOW_ENTER )
+    if( message == GUI_MSG_WINDOW_ENTER )
     {
-        if( CGuiScreenIntroTransition::s_introTransitionPlayed )
+#if defined(RAD_ANDROID)
+        // This must happen before CGuiScreen handles WINDOW_ENTER below.
+        // Disabling the fade later leaves a pending fade transition that can
+        // never finish, keeping the returned main menu in INTRO with no input.
+        if( SharOpenXR::IsVrModeEnabled() )
+        {
+            this->SetFadingEnabled( false );
+        }
+        else
+#endif
+        if( m_firstTimeEntered &&
+            CGuiScreenIntroTransition::s_introTransitionPlayed )
         {
             this->SetFadingEnabled( false );
         }
@@ -785,6 +802,37 @@ CGuiScreenMainMenu::InitMenu()
 //===========================================================================
 void CGuiScreenMainMenu::InitIntro()
 {
+    // Frontend resources survive a gameplay round trip. A gag layer that was
+    // visible when the game started therefore remains visible when the main
+    // menu is entered again, drawing a second Homer over the authored couch
+    // Homer. Reset the transient gag presentation on every entry.
+    if( m_gags != NULL )
+    {
+        if( m_currentGagIndex >= 0 &&
+            m_currentGagIndex < static_cast<int>(m_gags->GetNumberOfLayers()) )
+        {
+            Scrooby::Layer* currentGagLayer =
+                m_gags->GetLayerByIndex( m_currentGagIndex );
+            if( currentGagLayer != NULL )
+            {
+                currentGagLayer->SetVisible( false );
+            }
+        }
+
+        // Gag0 supplies alternate Homer animations to the main model; its
+        // duplicate model itself must never be displayed.
+        Scrooby::Pure3dObject* homerGag =
+            m_gags->GetPure3dObject( "Gag0" );
+        if( homerGag != NULL )
+        {
+            homerGag->SetVisible( false );
+        }
+    }
+    GetEventManager()->TriggerEvent( EVENT_FE_GAG_STOP );
+    m_currentGagIndex = -1;
+    m_nextGagIndex = -1;
+    m_gagsElapsedTime = 0;
+
     if( m_firstTimeEntered )
     {
         this->SetFadeTime( FIRST_TIME_FADE_IN_TIME );
@@ -812,6 +860,9 @@ void CGuiScreenMainMenu::InitRunning()
 {
     if( m_firstTimeEntered )
     {
+#if defined(RAD_ANDROID)
+        if( !SharOpenXR::IsVrModeEnabled() )
+#endif
         this->SetFadingEnabled( true );
         this->RestoreDefaultFadeTime();
 
@@ -1500,7 +1551,12 @@ void CGuiScreenIntroTransition::HandleMessage
                 {
                     m_numTransitionsPending--;
 
+#if defined(RAD_ANDROID)
+                    // The final pose is applied by the main Pure3D object on
+                    // its first render, after all controller tracks exist.
+#else
                     this->StartTransitionAnimation( 721, 770, false );
+#endif
 
                     if( m_screenCover != NULL )
                     {

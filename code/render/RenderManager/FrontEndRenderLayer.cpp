@@ -334,9 +334,9 @@ void FrontEndRenderLayer::Render()
     CGuiManager* guiManager=GetGuiSystem()->GetCurrentManager();
     const CGuiWindow::eGuiWindowID screenId=guiManager?
         guiManager->GetCurrentScreen():CGuiWindow::GUI_WINDOW_ID_UNDEFINED;
-    // Preserve the original VR frontend split: the animated main menu uses
-    // the stereo 3D path, while boot/loading/pause and nested frontend pages
-    // are presented on the world-locked GUI panel.
+    // Present the complete frontend, including the main menu, on one
+    // world-locked VR panel. Keeping it active across screen changes preserves
+    // the same anchor instead of making every submenu follow a new camera pose.
     const bool loadingScreen=
         screenId==CGuiWindow::GUI_SCREEN_ID_LOADING ||
         screenId==CGuiWindow::GUI_SCREEN_ID_LOADING_FE;
@@ -347,8 +347,7 @@ void FrontEndRenderLayer::Render()
         guiContext==CONTEXT_PAUSE ||
         pauseScreen ||
         loadingScreen ||
-        (guiContext==CONTEXT_FRONTEND &&
-         screenId!=CGuiWindow::GUI_SCREEN_ID_MAIN_MENU);
+        guiContext==CONTEXT_FRONTEND;
     SharOpenXR::SetFrontendPlaneActive(spatialFrontend);
     SharOpenXR::SetFrontendPlaneRendering(spatialFrontend);
     SharOpenXR::SetPauseCoinVisible(pauseScreen);
