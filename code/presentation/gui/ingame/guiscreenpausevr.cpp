@@ -109,7 +109,7 @@ CGuiScreenPauseVR::CGuiScreenPauseVR(Scrooby::Screen* screen,CGuiEntity* parent)
             else if(i==1){ value->AddHardCodedString("Off"); value->AddHardCodedString("On"); }
             else if(i==2){ value->AddHardCodedString("Smooth"); value->AddHardCodedString("Snap"); }
             else if(i==3) value->AddHardCodedString("120");
-            else if(i==4){ value->AddHardCodedString("Stick"); value->AddHardCodedString("VR Wheel"); }
+            else if(i==4){ value->AddHardCodedString("Stick"); value->AddHardCodedString("VR Wheel"); value->AddHardCodedString("Third Person"); }
             else { value->AddHardCodedString("Off"); value->AddHardCodedString("On"); }
             row->Show();
             row->SetPosition(0,y);
@@ -194,16 +194,21 @@ CGuiScreenPauseVR::CGuiScreenPauseVR(Scrooby::Screen* screen,CGuiEntity* parent)
         value->SetOutlineColour(tColour(0,0,0,192));
         label->SetTextMode(Scrooby::TEXT_WRAP);
         value->SetTextMode(Scrooby::TEXT_WRAP);
+        if(i==4 && value->GetNumOfStrings()<3)
+        {
+            FeText* valueText=dynamic_cast<FeText*>(value);
+            if(valueText) valueText->AddHardCodedString("Third Person");
+        }
         label->SetString(0,Labels[i]);
         if(i==0){ value->SetString(0,"Original"); value->SetString(1,"VR"); }
         else if(i==1){ value->SetString(0,"Off"); value->SetString(1,"On"); }
         else if(i==2){ value->SetString(0,"Smooth"); value->SetString(1,"Snap"); }
         else if(i==3) value->SetString(0,"120");
-        else if(i==4){ value->SetString(0,"Stick"); value->SetString(1,"VR Wheel"); }
+        else if(i==4){ value->SetString(0,"Stick"); value->SetString(1,"VR Wheel"); value->SetString(2,"Third Person"); }
         else { value->SetString(0,"Off"); value->SetString(1,"On"); }
         m_pMenu->AddMenuItem(label,value,NULL,NULL,left,right,
                              SELECTION_ENABLED|VALUES_WRAPPED|TEXT_OUTLINE_ENABLED);
-        m_pMenu->SetSelectionValueCount(i,(i<3 || i>=4)?2:1);
+        m_pMenu->SetSelectionValueCount(i,i==4?3:((i<3 || i>4)?2:1));
     }
 
     SetVrLayoutVisible(false);
@@ -264,7 +269,7 @@ void CGuiScreenPauseVR::HandleMessage(eGuiMessage message,unsigned int param1,un
                 UpdateNumericValue(3);
             }
             else if(param1==3 && param2<5) SharOpenXR::SetSmoothTurnSpeed(SmoothSpeeds[param2]);
-            else if(param1==4) SharOpenXR::SetVrSteeringWheelEnabled(param2==1);
+            else if(param1==4) SharOpenXR::SetVehicleControlMode(static_cast<int>(param2));
             else if(param1==5) SharOpenXR::SetDeveloperMenusEnabled(param2==1);
         }
         if(m_pMenu)
@@ -335,7 +340,7 @@ void CGuiScreenPauseVR::InitIntro()
     m_pMenu->SetSelectionValue(0,SharOpenXR::IsVrModeEnabled()?1:0);
     m_pMenu->SetSelectionValue(1,SharOpenXR::IsSeatedMode()?1:0);
     m_pMenu->SetSelectionValue(2,SharOpenXR::IsSnapTurnEnabled()?1:0);
-    m_pMenu->SetSelectionValue(4,SharOpenXR::IsVrSteeringWheelEnabled()?1:0);
+    m_pMenu->SetSelectionValue(4,SharOpenXR::GetVehicleControlMode());
     if(m_frontendLayout)
         m_pMenu->SetSelectionValue(5,SharOpenXR::IsDeveloperMenusEnabled()?1:0);
     m_numericValues[0]=Closest(SmoothSpeeds,SharOpenXR::GetSmoothTurnSpeed());

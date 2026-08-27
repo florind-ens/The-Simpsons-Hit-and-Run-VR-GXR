@@ -666,6 +666,7 @@ void SuperCamCentral::Update( unsigned int milliseconds, bool isFirstSubstep )
         {
             Character* vrCharacter=GetCharacterManager()->GetCharacter(0);
             const bool vrSeated=vrCharacter && vrCharacter->IsInCar();
+            const bool thirdPersonVehicle=SharOpenXR::IsThirdPersonVehicleMode();
             if(!mTarget->IsCar() &&
                (activeType==SuperCam::WALKER_CAM
 #ifdef RAD_PC
@@ -675,6 +676,16 @@ void SuperCamCentral::Update( unsigned int milliseconds, bool isFirstSubstep )
             {
                 SelectSuperCam(SuperCam::FIRST_PERSON_CAM,CUT|FORCE,0);
                 mVrForcedCamera=true;
+            }
+            else if(mTarget->IsCar() && vrSeated && thirdPersonVehicle)
+            {
+                // Third-person vehicle control deliberately restores the
+                // game's preferred follow camera. The OpenXR eye transform is
+                // still layered on top, but the authored chase position,
+                // collision and vehicle framing remain unchanged.
+                if(activeType==SuperCam::FIRST_PERSON_CAM)
+                    SelectSuperCam(SuperCam::FOLLOW_CAM,CUT|FORCE,0);
+                mVrForcedCamera=false;
             }
             else if(mTarget->IsCar() && vrSeated &&
                     activeType==SuperCam::FIRST_PERSON_CAM)
