@@ -154,7 +154,7 @@ struct State
     bool vrSteeringWheelEnabled;
     int vehicleLightMode;
     bool wheelGrabbed[2];
-    float gripValue[2],wheelGrabAngle[2],wheelGrabOffset[2],wheelAngle;
+    float gripValue[2],wheelGrabAngle[2],wheelGrabTarget[2],wheelGrabOffset[2],wheelAngle;
     // Orientation snapshot at grab: rim angle + full hand rotation. While
     // held, the hand is spun only around the wheel axis by (currentAngle -
     // grabAngle) so palms do not twist relative to the rim.
@@ -167,6 +167,7 @@ struct State
     unsigned int menuAxisLock,menuAxisNeutralFrames;
     bool vrBaseHeadingValid;
     rmt::Vector vrBaseHeading;
+    bool roomscaleMovementSuspended;
     bool cullingBaseValid;
     rmt::Matrix cullingBaseCamera;
     GLuint framebuffer, layerFramebuffer, depthTexture, multiviewDepthTexture;
@@ -462,7 +463,11 @@ static void UpdateVrSteeringWheel()
             {
                 g.wheelGrabbed[hand] = true;
                 g.wheelGrabOffset[hand] = slotOffset;
-                g.wheelGrabAngle[hand] = g.wheelAngle + slotOffset;
+                // Keep the real controller angle as the input baseline.  The
+                // rendered hand may snap to a fixed slot, but grabbing the rim
+                // at any other point must not change the steering value.
+                g.wheelGrabAngle[hand] = angle;
+                g.wheelGrabTarget[hand] = g.wheelAngle;
                 // Rigid-follow baseline is the fixed slot on the current wheel
                 // pose, not the free-hand atan2, so both hands share one
                 // consistent wheel frame.
@@ -477,11 +482,16 @@ static void UpdateVrSteeringWheel()
         }
         else if (radial > kMinRadial)
         {
-            // Controller orbit around the hub drives the wheel; fixed offset
-            // keeps left/right contributions aligned to the 10-and-2 slots.
-            float desired = UnwrapDelta(angle - g.wheelGrabOffset[hand]);
-            desired = std::max(-kVrWheelMaxAngle, std::min(kVrWheelMaxAngle, desired));
-            targetSum += desired;
+            // Accumulate the shortest angular movement from the previous
+            // frame.  Using an absolute wrapped atan2 angle here made the
+            // target jump from one steering lock to the other whenever a hand
+            // crossed the +/-pi seam.  It also made off-slot grabs snap.
+            const float delta = UnwrapDelta(angle - g.wheelGrabAngle[hand]);
+            g.wheelGrabTarget[hand] += delta;
+            g.wheelGrabTarget[hand] = std::max(-kVrWheelMaxAngle,
+                                               std::min(kVrWheelMaxAngle,
+                                                        g.wheelGrabTarget[hand]));
+            targetSum += g.wheelGrabTarget[hand];
             ++targetCount;
             g.wheelGrabAngle[hand] = angle;
         }
@@ -1084,12 +1094,32 @@ bool ConsumeRoomscaleMovement(rmt::Vector* worldDelta)
                      g.eyes[1].view.pose.position.x)*0.5f;
     head.position.z=(g.eyes[0].view.pose.position.z+
                      g.eyes[1].view.pose.position.z)*0.5f;
+
+    Character* player=GetCharacterManager() ?
+                      GetCharacterManager()->GetCharacter(0) : NULL;
+    if(player && player->IsInCar())
+    {
+        // The vehicle camera needs the origin captured on entry to remain
+        // fixed. Advancing origin.x/z here cancels the HMD translation in
+        // GetEyeCamera, leaving only rotational tracking in the car.
+        g.roomscaleMovementSuspended=true;
+        return false;
+    }
+
+    if(g.roomscaleMovementSuspended)
+    {
+        // Discard the lean accumulated inside the vehicle. Otherwise the
+        // first on-foot frame would turn it into character locomotion.
+        g.origin.position.x=head.position.x;
+        g.origin.position.z=head.position.z;
+        g.roomscaleMovementSuspended=false;
+        return false;
+    }
+
     const XrPosef relative=RelativePose(g.origin,head);
     rmt::Vector local(relative.position.x,0.0f,-relative.position.z);
 
-    // Always consume horizontal tracking motion.  This prevents movement
-    // accumulated in a vehicle or during a tracking discontinuity from being
-    // applied when the player returns to walking.
+    // Consume horizontal tracking motion as on-foot locomotion.
     g.origin.position.x=head.position.x;
     g.origin.position.z=head.position.z;
 
