@@ -380,21 +380,22 @@ static const float kVrWheelRadius     = 0.18f;
 // 160 deg makes sharp turns easier without feeling twitchy near centre.
 static const float kVrWheelMaxAngle   = 2.44346095f;
 static const float kGrabGripThreshold = 0.55f;
-static const float kRadialTolerance   = 0.12f;
+static const float kRadialTolerance   = 0.08f;
 static const float kDepthTolerance    = 0.16f;
 // Temporal smoothing kept for calm tracking; response comes from max-angle
 // and the output curve below, not from more lag.
 static const float kAngleSmooth       = 0.18f;
 // Closer to 1.0 = slower spring-back when neither hand is gripping.
 static const float kCentreReturn      = 0.94f;
-static const float kMinRadial         = 0.06f;  // ignore near-centre atan2 noise
+// atan2 becomes extremely sensitive near the hub. Freeze steering before an
+// inward controller movement can amplify into a large angular jump.
+static const float kMinRadial         = 0.10f;
+// Reject impossible one-frame tracking changes without affecting deliberate
+// fast steering (about 8.5 degrees per 72 Hz frame).
+static const float kMaxGrabDelta      = 0.15f;
 // Small deadzone so centre stays stable without eating turn authority.
 static const float kSteerOutputDeadzone = 0.025f;
-// Fixed 9-and-3 grab slots (radians from top of rim). hand 0 = left
-// controller → left side; hand 1 = right controller → right side.
-// ±90° is symmetric about the hub for a clean swivel.
-static const float kOptimalGrabAngle  = 1.5707963f; // 90 degrees
-
+// Grip offsets are captured from the controller's actual point on the rim.
 static float UnwrapDelta(float a)
 {
     while (a >  3.14159265f) a -= 6.28318531f;
@@ -453,25 +454,21 @@ static void UpdateVrSteeringWheel()
 
         const bool squeezed = g.gripValue[hand] > kGrabGripThreshold;
         const float angle = std::atan2(dx, dy);
-        // Left controller → upper-left slot; right → upper-right. Same every
-        // grab so steering feel does not depend on where on the rim you squeeze.
-        const float slotOffset = (hand == 0) ? -kOptimalGrabAngle : kOptimalGrabAngle;
-
         if (!g.wheelGrabbed[hand])
         {
             if (squeezed && close)
             {
                 g.wheelGrabbed[hand] = true;
-                g.wheelGrabOffset[hand] = slotOffset;
-                // Keep the real controller angle as the input baseline.  The
-                // rendered hand may snap to a fixed slot, but grabbing the rim
-                // at any other point must not change the steering value.
+                g.wheelGrabOffset[hand] = UnwrapDelta(angle - g.wheelAngle);
+                // Keep the real controller angle as the input baseline and
+                // render the hand at that same point on the rim.
                 g.wheelGrabAngle[hand] = angle;
-                g.wheelGrabTarget[hand] = g.wheelAngle;
-                // Rigid-follow baseline is the fixed slot on the current wheel
-                // pose, not the free-hand atan2, so both hands share one
-                // consistent wheel frame.
-                g.wheelGrabOrientAngle[hand] = g.wheelAngle + slotOffset;
+                const unsigned other = 1u - hand;
+                g.wheelGrabTarget[hand] = g.wheelGrabbed[other]
+                    ? g.wheelGrabTarget[other] : g.wheelAngle;
+                // Store the physical orientation at the actual grab angle so
+                // the hand rotates rigidly with that point on the wheel.
+                g.wheelGrabOrientAngle[hand] = angle;
                 g.wheelGrabOrientRot[hand] = pose;
                 g.wheelGrabOrientRot[hand].Row(3).Set(0.0f, 0.0f, 0.0f);
             }
@@ -486,7 +483,8 @@ static void UpdateVrSteeringWheel()
             // frame.  Using an absolute wrapped atan2 angle here made the
             // target jump from one steering lock to the other whenever a hand
             // crossed the +/-pi seam.  It also made off-slot grabs snap.
-            const float delta = UnwrapDelta(angle - g.wheelGrabAngle[hand]);
+            float delta = UnwrapDelta(angle - g.wheelGrabAngle[hand]);
+            delta = std::max(-kMaxGrabDelta, std::min(kMaxGrabDelta, delta));
             g.wheelGrabTarget[hand] += delta;
             g.wheelGrabTarget[hand] = std::max(-kVrWheelMaxAngle,
                                                std::min(kVrWheelMaxAngle,
