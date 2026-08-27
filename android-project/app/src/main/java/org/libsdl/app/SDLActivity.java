@@ -223,6 +223,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
     // This is what SDL runs in. It invokes SDL_main(), eventually
     protected static Thread mSDLThread;
+    protected static boolean mActivityCreated = false;
 
     protected static SDLGenericMotionListener_API12 getMotionListener() {
         if (mMotionListener == null) {
@@ -325,6 +326,18 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         Log.v(TAG, "Model: " + Build.MODEL);
         Log.v(TAG, "onCreate()");
         super.onCreate(savedInstanceState);
+
+        // This game and its middleware contain process-lifetime native
+        // statics, so SDL_main cannot safely be run twice in one process.
+        // SDL3 defaults to a fresh process for this reason; keep that policy
+        // when Android retains and recreates the Activity after exit.
+        if (mActivityCreated) {
+            Log.v(TAG, "activity re-created; terminating retained process");
+            System.exit(0);
+            return;
+        }
+
+        mActivityCreated = true;
 
         try {
             Thread.currentThread().setName("SDLActivity");
@@ -611,7 +624,9 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
             // Wait for "SDLThread" thread to end
             try {
-                SDLActivity.mSDLThread.join();
+                // SDL_Init may race with nativeSendQuit and discard the quit
+                // event. Never block Android's Activity teardown forever.
+                SDLActivity.mSDLThread.join(1000);
             } catch(Exception e) {
                 Log.v(TAG, "Problem stopping SDLThread: " + e);
             }

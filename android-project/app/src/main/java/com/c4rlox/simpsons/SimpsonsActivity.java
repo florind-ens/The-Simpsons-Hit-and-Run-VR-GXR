@@ -21,6 +21,21 @@ public class SimpsonsActivity extends SDLActivity {
         requestGameStorageAccess();
     }
 
+    @Override
+    protected void onDestroy() {
+        // Let SDL deliver its quit event and release OpenXR/EGL first.
+        super.onDestroy();
+
+        // SHAR and its legacy middleware own process-lifetime native static
+        // state and cannot safely execute SDL_main twice in one process.
+        // Quest commonly retains an empty Activity process after exit, so
+        // terminate it once the final Activity teardown is complete. The next
+        // launcher press then always starts from a clean native process.
+        if (isFinishing() && !isChangingConfigurations()) {
+            android.os.Process.killProcess(android.os.Process.myPid());
+        }
+    }
+
     private void requestGameStorageAccess() {
         if (storagePermissionRequested) {
             return;
