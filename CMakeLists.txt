@@ -58,7 +58,11 @@ endif()
 # Android (define BEFORE add_subdirectory so libs/code see it)
 if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Android")
 	add_definitions(-DRAD_ANDROID)
-	set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -llog -landroid -lEGL -lGLESv2")
+	# Android 15 and newer run with 16 KB memory pages, and Android XR headsets
+	# (Galaxy XR ships on Android 16) are among them: a 4 KB-aligned .so fails
+	# to load there outright. NDK r28 already aligns to 16 KB by default, so
+	# this is belt and braces for anyone building with an older NDK.
+	set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -llog -landroid -lEGL -lGLESv2 -Wl,-z,max-page-size=16384")
 	include_directories("${CMAKE_CURRENT_SOURCE_DIR}/libs/SDL3/src/video/khronos")
 endif()
 

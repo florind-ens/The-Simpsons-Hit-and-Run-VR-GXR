@@ -12,6 +12,18 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
+// The bundled OpenXR 1.1 headers predate the XR_ANDROID vendor extensions,
+// so this one is spelled out.  The structure type follows OpenXR's extension
+// enumeration rule (1000000000 + (extension number - 1) * 1000 + offset) for
+// XR_ANDROID_recommended_resolution, which the registry numbers 462.
+#if !defined(XR_ANDROID_RECOMMENDED_RESOLUTION_EXTENSION_NAME)
+#define XR_ANDROID_RECOMMENDED_RESOLUTION_EXTENSION_NAME "XR_ANDROID_recommended_resolution"
+#endif
+#if !defined(XR_TYPE_EVENT_DATA_RECOMMENDED_RESOLUTION_CHANGED_ANDROID)
+#define XR_TYPE_EVENT_DATA_RECOMMENDED_RESOLUTION_CHANGED_ANDROID \
+    static_cast<XrStructureType>(1000461000)
+#endif
+
 #include <vr/openxrmanager.h>
 #include <p3d/camera.hpp>
 #include <p3d/shader.hpp>
@@ -243,6 +255,7 @@ struct State
     PFN_xrSetColorSpaceFB SetColorSpaceFB;
     PFN_xrRequestDisplayRefreshRateFB RequestDisplayRefreshRateFB;
     PFN_xrEnumerateDisplayRefreshRatesFB EnumerateDisplayRefreshRatesFB;
+    PFN_xrGetDisplayRefreshRateFB GetDisplayRefreshRateFB;
     PFN_xrEnumerateEnvironmentBlendModes EnumerateEnvironmentBlendModes;
     PFN_xrGetCurrentInteractionProfile GetCurrentInteractionProfile;
     PFN_xrPathToString PathToString;
@@ -250,7 +263,9 @@ struct State
     // runtime exposes the FB colour-space and display-refresh-rate
     // extensions; Android XR and other OpenXR runtimes may expose neither,
     // one, or both.  Nothing below may assume their presence.
-    bool hasColorSpace, hasDisplayRefreshRate;
+    bool hasColorSpace, hasDisplayRefreshRate, hasRecommendedResolution;
+    // Android XR revises its recommended eye resolution as thermals allow.
+    bool recommendedResolutionChanged;
     std::vector<float> refreshRates;
     XrEnvironmentBlendMode blendMode;
 } g = {};
@@ -625,18 +640,31 @@ static bool CreateSwapchains()
     // advertise for a symmetric stereo view configuration.
     for (uint32_t i=0; i<2; ++i)
     {
-        // Runtimes recommend a size below the panel's native resolution to
-        // leave performance headroom, so supersample the recommendation and
-        // let the advertised maximum clamp the result.  Deriving the base from
-        // the runtime keeps this correct on any headset; the constant this
-        // replaced was Quest 3's 2064x2208 panel, which this factor
-        // reproduces to within a couple of per cent there.
-        const float kNativePanelSupersample=1.25f;
+        // The runtime's recommendation is the only honest starting point: on
+        // Android XR it is thermally managed and is revised while the app runs
+        // (XR_ANDROID_recommended_resolution).  Runtimes recommend below panel
+        // native to leave headroom, so supersample it, then cap the result.
+        //
+        // The cap matters on Android XR. Galaxy XR drives 3552x3840 micro-OLED
+        // panels; supersampling a recommendation drawn from those would ask
+        // this renderer for far more pixels than it can shade inside a 13.8 ms
+        // frame at the platform's default 72 Hz. The budget below is the eye
+        // buffer this port shipped with on Quest 3, which also sits well above
+        // Android XR's 1856x2160 per-eye quality guideline.
+        const float kRecommendedSupersample=1.25f;
+        const float kMaxEyePixels=2064.0f*2208.0f;
         Eye& e = g.eyes[i];
-        const uint32_t baseWidth=static_cast<uint32_t>(
-            configs[i].recommendedImageRectWidth*kNativePanelSupersample+0.5f);
-        const uint32_t baseHeight=static_cast<uint32_t>(
-            configs[i].recommendedImageRectHeight*kNativePanelSupersample+0.5f);
+        float baseWidth=configs[i].recommendedImageRectWidth*kRecommendedSupersample;
+        float baseHeight=configs[i].recommendedImageRectHeight*kRecommendedSupersample;
+        const float basePixels=baseWidth*baseHeight;
+        if(basePixels>kMaxEyePixels)
+        {
+            // Reduce both axes equally so the recommended aspect survives.
+            const float reduction=std::sqrt(kMaxEyePixels/basePixels);
+            baseWidth*=reduction; baseHeight*=reduction;
+        }
+        // The render-scale setting then scales that base, and may deliberately
+        // push past the budget.
         const uint32_t scaledWidth=static_cast<uint32_t>(baseWidth*g.renderScale+0.5f);
         const uint32_t scaledHeight=static_cast<uint32_t>(baseHeight*g.renderScale+0.5f);
         e.width=static_cast<int32_t>(std::min(scaledWidth,configs[i].maxImageRectWidth))&~3;
@@ -700,6 +728,7 @@ static bool CreateSwapchains()
         XRERR("half-resolution GTAO resources unavailable");
     g.appliedRenderScale=g.renderScale;
     g.renderScalePending=false;
+    g.recommendedResolutionChanged=false;
     return true;
 }
 
@@ -838,18 +867,25 @@ static bool CreateInputActions()
     };
     bool bound = suggest("/interaction_profiles/oculus/touch_controller",
                          bindings, sizeof(bindings) / sizeof(bindings[0]));
-    // The Khronos simple controller is the mandatory lowest common
-    // denominator.  It defines no thumbsticks or face buttons, so only the
-    // paths it actually declares may be listed here.
-    const XrActionSuggestedBinding simpleBindings[] = {
-        {g.selectAction, path("/user/hand/right/input/select/click")},
-        {g.backAction, path("/user/hand/left/input/select/click")},
-        {g.menuAction, path("/user/hand/left/input/menu/click")},
-        {g.handPoseAction, path("/user/hand/left/input/grip/pose")},
-        {g.handPoseAction, path("/user/hand/right/input/grip/pose")}
-    };
-    bound = suggest("/interaction_profiles/khr/simple_controller", simpleBindings,
-                    sizeof(simpleBindings) / sizeof(simpleBindings[0])) || bound;
+    if (!bound)
+    {
+        // Last resort only. Android XR's own porting guidance is to keep the
+        // Khronos simple controller out of the action map, because its
+        // presence interferes with binding the Galaxy XR controllers; and the
+        // profile has no thumbsticks or face buttons, so a headset that fell
+        // back to it could not drive the game properly anyway. It is offered
+        // solely when the Touch profile was rejected and the alternative is no
+        // input at all.
+        const XrActionSuggestedBinding simpleBindings[] = {
+            {g.selectAction, path("/user/hand/right/input/select/click")},
+            {g.backAction, path("/user/hand/left/input/select/click")},
+            {g.menuAction, path("/user/hand/left/input/menu/click")},
+            {g.handPoseAction, path("/user/hand/left/input/grip/pose")},
+            {g.handPoseAction, path("/user/hand/right/input/grip/pose")}
+        };
+        bound = suggest("/interaction_profiles/khr/simple_controller", simpleBindings,
+                        sizeof(simpleBindings) / sizeof(simpleBindings[0]));
+    }
     if (!bound) { XRERR("no interaction profile accepted the gameplay bindings"); return false; }
     return true;
 }
@@ -1363,8 +1399,13 @@ bool Initialize()
     if(g.hasColorSpace) extensions.push_back(XR_FB_COLOR_SPACE_EXTENSION_NAME);
     g.hasDisplayRefreshRate=supportsExtension(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
     if(g.hasDisplayRefreshRate) extensions.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
-    XRLOG("runtime advertises %u extensions; colour space %s, display refresh rate %s",
-          availableCount,g.hasColorSpace?"yes":"no",g.hasDisplayRefreshRate?"yes":"no");
+    g.hasRecommendedResolution=supportsExtension(XR_ANDROID_RECOMMENDED_RESOLUTION_EXTENSION_NAME);
+    if(g.hasRecommendedResolution)
+        extensions.push_back(XR_ANDROID_RECOMMENDED_RESOLUTION_EXTENSION_NAME);
+    XRLOG("runtime advertises %u extensions; colour space %s, display refresh rate %s, "
+          "recommended resolution %s",
+          availableCount,g.hasColorSpace?"yes":"no",g.hasDisplayRefreshRate?"yes":"no",
+          g.hasRecommendedResolution?"yes":"no");
     XrInstanceCreateInfoAndroidKHR androidInfo={XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
     JNIEnv* env=static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
     JavaVM* vm=NULL; env->GetJavaVM(&vm); androidInfo.applicationVM=vm;
@@ -1428,6 +1469,8 @@ bool Initialize()
                   reinterpret_cast<PFN_xrVoidFunction*>(&g.RequestDisplayRefreshRateFB));
         g.getProc(g.instance,"xrEnumerateDisplayRefreshRatesFB",
                   reinterpret_cast<PFN_xrVoidFunction*>(&g.EnumerateDisplayRefreshRatesFB));
+        g.getProc(g.instance,"xrGetDisplayRefreshRateFB",
+                  reinterpret_cast<PFN_xrVoidFunction*>(&g.GetDisplayRefreshRateFB));
     }
     // Which rates exist is a property of the headset.  Ask the runtime instead
     // of offering a fixed list, and leave the rate alone entirely when the
@@ -1449,11 +1492,27 @@ bool Initialize()
     }
     else
     {
-        // Honour the saved preference only when this headset offers it.  The
-        // lowest advertised rate is the safe default everywhere else.
-        float selected=g.refreshRates.front();
+        // Honour the saved preference when this headset offers it.  Failing
+        // that, keep whatever the runtime already chose rather than guessing:
+        // Galaxy XR advertises 60/72/90 and defaults to 72, so picking the
+        // lowest advertised rate would quietly downgrade it.
+        float selected=0.0f;
         for(size_t i=0;i<g.refreshRates.size();++i)
             if(std::fabs(g.refreshRates[i]-g.refreshRate)<0.1f) { selected=g.refreshRates[i]; break; }
+        if(selected<=0.0f && g.GetDisplayRefreshRateFB)
+        {
+            float current=0.0f;
+            if(XR_SUCCEEDED(g.GetDisplayRefreshRateFB(g.session,&current)) && current>0.0f)
+                selected=current;
+        }
+        if(selected<=0.0f) selected=g.refreshRates.front();
+        // Snap to an enumerated value so the display menu's index always
+        // matches the rate actually in use.
+        float nearest=g.refreshRates.front();
+        for(size_t i=0;i<g.refreshRates.size();++i)
+            if(std::fabs(g.refreshRates[i]-selected)<std::fabs(nearest-selected))
+                nearest=g.refreshRates[i];
+        selected=nearest;
         if(g.RequestDisplayRefreshRateFB)
         {
             const XrResult refreshResult=g.RequestDisplayRefreshRateFB(g.session,selected);
@@ -1544,6 +1603,13 @@ void PollEvents()
             if(s->state==XR_SESSION_STATE_READY) { XrSessionBeginInfo bi={XR_TYPE_SESSION_BEGIN_INFO}; bi.primaryViewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO; if(XR_SUCCEEDED(g.BeginSession(g.session,&bi))) g.running=true; }
             else if(s->state==XR_SESSION_STATE_STOPPING) { g.EndSession(g.session); g.running=false; }
         }
+        else if(ev.type==XR_TYPE_EVENT_DATA_RECOMMENDED_RESOLUTION_CHANGED_ANDROID) {
+            // Android XR raises and lowers its recommended eye resolution as
+            // thermals allow.  Pick the new figures up at the next safe point
+            // rather than reallocating swapchains mid-frame.
+            g.recommendedResolutionChanged=true;
+            XRLOG("runtime revised its recommended resolution");
+        }
         else if(ev.type==XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
             // Which profile the runtime picks depends on the headset and on
             // what the user has powered on, so report the live choice rather
@@ -1575,7 +1641,7 @@ bool BeginFrame()
     g.perfDrawCpu=g.perfMaterialCpu=g.perfUploadCpu=0.0;
     for(unsigned i=0;i<22;++i) g.perfSections[i]=0.0;
     PollEvents(); if(!g.running) return false;
-    if(g.renderScalePending)
+    if(g.renderScalePending || g.recommendedResolutionChanged)
     {
         const float requestedScale=g.renderScale;
         const float fallbackScale=g.appliedRenderScale;

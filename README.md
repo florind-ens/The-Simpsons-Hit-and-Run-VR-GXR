@@ -39,17 +39,29 @@
     `XR_KHR_opengl_es_enable` are required; `XR_FB_color_space` and
     `XR_FB_display_refresh_rate` are enabled only where present, and the game
     runs without either.
-  - **Controllers.** Bindings are suggested for the Oculus Touch profile and
-    for the Khronos simple controller, each offered separately so an
-    unrecognised profile cannot take the other down with it. The profile the
-    runtime actually selects is written to logcat.
+  - **Controllers.** The Oculus Touch profile is the primary binding, which
+    both Horizon OS and Android XR support for 6DoF controllers. The Khronos
+    simple controller is suggested *only* if that is rejected: Android XR's
+    porting guidance is to keep it out of the action map, because its
+    presence interferes with binding the Galaxy XR controllers. The profile
+    the runtime actually selects is written to logcat.
   - **Refresh rate.** The display menu is built from the rates the runtime
-    enumerates. Where no refresh-rate control exists the row shows
-    “Default” and the runtime's own choice is left alone.
-  - **Eye resolution.** Derived from the runtime's recommended view size
-    rather than from a hard-coded panel resolution.
+    enumerates (Galaxy XR reports 60/72/90). A saved preference is honoured
+    when the headset offers it; otherwise the rate the runtime already chose
+    is kept rather than guessed at. Where no refresh-rate control exists the
+    row shows “Default”.
+  - **Eye resolution.** Derived from the runtime's recommended view size,
+    supersampled, then capped to a fixed per-eye pixel budget. The cap is what
+    keeps Galaxy XR's 3552x3840 panels from asking this renderer for more
+    pixels than it can shade in a 13.8 ms frame; it stays above Android XR's
+    1856x2160 per-eye quality guideline. `XR_ANDROID_recommended_resolution`
+    is enabled where present, so the eye buffers are rebuilt when the runtime
+    revises its recommendation for thermal reasons.
   - **Blend mode.** Chosen from the modes the system advertises for the
     primary stereo view configuration.
+  - **16 KB pages.** Android 15 and newer run with 16 KB memory pages and
+    Galaxy XR ships on Android 16, where a 4 KB-aligned `.so` will not load.
+    The native build passes `-Wl,-z,max-page-size=16384` explicitly.
   - **Manifest.** Carries Horizon OS and Android XR entries side by side.
     Both platforms' feature declarations are marked optional on purpose, so
     that one package installs on either; the Android XR
@@ -69,13 +81,37 @@
   On first launch the game opens the system “All files access” screen; grant
   it so the game can read that folder.
 
+  ## Known Gaps on Android XR
+
+  - **Controllers are required.** Android XR's quality guidelines expect an
+    app to be usable with hand input alone. This is a port of a 2003 twin-stick
+    game and needs thumbsticks, so `android.hardware.xr.input.controller` is
+    declared (optional, so the package still installs) and the Galaxy XR
+    controllers are needed to play.
+  - **No foveated rendering.** `XR_FB_foveation` is available on both
+    platforms and would be the highest-value next optimisation at this eye
+    resolution. It is not wired up.
+  - **FFmpeg dependency.** `com.fpliu.ndk.pkg.prefab.android.21:ffmpeg:6.0` is
+    not published on Maven Central, so it has to come from a local Maven
+    repository. It is also a prebuilt `android-21` binary, which means its
+    16 KB page alignment is not guaranteed. Verify before trusting an
+    Android XR build:
+
+    ```
+    unzip -p app-release.apk lib/arm64-v8a/libavcodec.so > /tmp/libavcodec.so
+    llvm-readelf -l /tmp/libavcodec.so | grep LOAD
+    ```
+
+    The `Align` column must read `0x4000`. `0x1000` means the library will
+    fail to load on Galaxy XR.
+
   ## Project Status
 
   The port is actively developed. Core gameplay, VR rendering, menus, HUD, and
   controller support have been adapted for standalone VR. The Android XR path
-  is written against the published Android XR OpenXR surface and has not yet
-  been verified on Galaxy XR hardware; Quest 3 remains the tested target.
-  PCVR version in plans.
+  is written against the published Android XR OpenXR surface and the Galaxy XR
+  hardware specification, and has not yet been verified on Galaxy XR hardware;
+  Quest 3 remains the tested target. PCVR version in plans.
 
   ## Based On
 
