@@ -6,7 +6,19 @@
 
     <!-- OpenGL ES 2.0 -->
     <uses-feature android:glEsVersion="0x00030002" android:required="true" />
-    <uses-feature android:name="android.hardware.vr.headtracking" android:required="true" android:version="1" />
+
+    <!-- Headset capabilities.  Every entry here is declared as optional on
+         purpose: this is one APK for both Horizon OS and Android XR, and each
+         platform advertises only its own feature names.  Marking either set as
+         required would make the package uninstallable on the other. -->
+    <!-- Horizon OS (Meta Quest). -->
+    <uses-feature android:name="android.hardware.vr.headtracking" android:required="false" android:version="1" />
+    <!-- Android XR.  The version is OpenXR 1.1. -->
+    <uses-feature android:name="android.software.xr.api.openxr" android:version="0x00010001" android:required="false" />
+    <!-- The game is driven by 6DoF controllers.  It is not marked required so
+         the package still installs on a headset whose controllers are an
+         optional accessory. -->
+    <uses-feature android:name="android.hardware.xr.input.controller" android:required="false" />
 
     <!-- Touchscreen support -->
     <uses-feature
@@ -81,6 +93,25 @@
         <!-- Keep Release optimizations while allowing ADB shell simpleperf to
              sample native call stacks on a connected development headset. -->
         <profileable android:shell="true" />
+
+        <!-- Android XR: the OpenXR runtime is loaded through this system
+             library.  Declared optional so the package still installs on
+             Horizon OS, where the Khronos loader finds Meta's runtime
+             instead. -->
+        <uses-native-library android:name="libopenxr.google.so" android:required="false" />
+
+        <!-- Android XR: an OpenXR application must be launched into Full Space
+             rather than into the windowed Home Space shell. -->
+        <property
+            android:name="android.window.PROPERTY_XR_ACTIVITY_START_MODE"
+            android:value="XR_ACTIVITY_START_MODE_FULL_SPACE_UNMANAGED" />
+        <!-- The port supports room-scale movement, so ask for the large
+             boundary rather than the seated one. -->
+        <property
+            android:name="android.window.PROPERTY_XR_BOUNDARY_TYPE_RECOMMENDED"
+            android:value="XR_BOUNDARY_TYPE_LARGE" />
+
+        <!-- Horizon OS only; both keys are ignored by other runtimes. -->
         <meta-data android:name="com.oculus.supportedDevices" android:value="quest3|quest3s" />
         <!-- Display assets/vr_splash.png in the Quest compositor while the
              process and OpenXR session are starting. -->
@@ -103,6 +134,11 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+                <!-- The Khronos-standard immersive marker, understood by
+                     Android XR, plus Horizon OS's vendor equivalent.  Extra
+                     categories on a filter never narrow what it matches, so
+                     carrying both is safe on either platform. -->
+                <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
                 <category android:name="com.oculus.intent.category.VR" />
             </intent-filter>
             <!-- Let Android know that we can handle some USB devices and should receive this event -->

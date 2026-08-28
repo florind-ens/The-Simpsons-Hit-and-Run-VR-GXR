@@ -242,6 +242,17 @@ struct State
     PFN_xrGetActionStateVector2f GetActionStateVector2f;
     PFN_xrSetColorSpaceFB SetColorSpaceFB;
     PFN_xrRequestDisplayRefreshRateFB RequestDisplayRefreshRateFB;
+    PFN_xrEnumerateDisplayRefreshRatesFB EnumerateDisplayRefreshRatesFB;
+    PFN_xrEnumerateEnvironmentBlendModes EnumerateEnvironmentBlendModes;
+    PFN_xrGetCurrentInteractionProfile GetCurrentInteractionProfile;
+    PFN_xrPathToString PathToString;
+    // Vendor extensions are optional and differ between runtimes.  Meta's
+    // runtime exposes the FB colour-space and display-refresh-rate
+    // extensions; Android XR and other OpenXR runtimes may expose neither,
+    // one, or both.  Nothing below may assume their presence.
+    bool hasColorSpace, hasDisplayRefreshRate;
+    std::vector<float> refreshRates;
+    XrEnvironmentBlendMode blendMode;
 } g = {};
 
 #define LOAD_XR(name) do { \
@@ -610,18 +621,24 @@ static bool CreateSwapchains()
     XRLOG("swapchain format 0x%llx", static_cast<long long>(chosen));
 
     // A single two-layer swapchain is required by GL_OVR_multiview2. Both
-    // views consequently use the same extent (OpenXR runtimes on Quest
-    // advertise matching stereo recommendations).
+    // views consequently use the same extent, which is what runtimes
+    // advertise for a symmetric stereo view configuration.
     for (uint32_t i=0; i<2; ++i)
     {
-        // Quest 3's physical panel is 2064x2208 per eye.  The runtime's
-        // recommended size is commonly lower for performance, so request the
-        // native panel dimensions while respecting the advertised maximum.
-        const uint32_t nativeWidth=2064;
-        const uint32_t nativeHeight=2208;
+        // Runtimes recommend a size below the panel's native resolution to
+        // leave performance headroom, so supersample the recommendation and
+        // let the advertised maximum clamp the result.  Deriving the base from
+        // the runtime keeps this correct on any headset; the constant this
+        // replaced was Quest 3's 2064x2208 panel, which this factor
+        // reproduces to within a couple of per cent there.
+        const float kNativePanelSupersample=1.25f;
         Eye& e = g.eyes[i];
-        const uint32_t scaledWidth=static_cast<uint32_t>(nativeWidth*g.renderScale+0.5f);
-        const uint32_t scaledHeight=static_cast<uint32_t>(nativeHeight*g.renderScale+0.5f);
+        const uint32_t baseWidth=static_cast<uint32_t>(
+            configs[i].recommendedImageRectWidth*kNativePanelSupersample+0.5f);
+        const uint32_t baseHeight=static_cast<uint32_t>(
+            configs[i].recommendedImageRectHeight*kNativePanelSupersample+0.5f);
+        const uint32_t scaledWidth=static_cast<uint32_t>(baseWidth*g.renderScale+0.5f);
+        const uint32_t scaledHeight=static_cast<uint32_t>(baseHeight*g.renderScale+0.5f);
         e.width=static_cast<int32_t>(std::min(scaledWidth,configs[i].maxImageRectWidth))&~3;
         e.height=static_cast<int32_t>(std::min(scaledHeight,configs[i].maxImageRectHeight))&~3;
         e.width=std::max(64,e.width); e.height=std::max(64,e.height);
@@ -654,14 +671,15 @@ static bool CreateSwapchains()
     glGenFramebuffers(1, &g.layerFramebuffer);
     const int depthWidth=std::max(g.eyes[0].width,g.eyes[1].width);
     const int depthHeight=std::max(g.eyes[0].height,g.eyes[1].height);
-    // Allocate once. Reallocating a 2064x2208 depth surface for every eye on
+    // Allocate once. Reallocating a full-eye depth surface for every eye on
     // every frame causes intermittent GLES driver stalls despite low average
     // GPU utilization.
     // The VR projection spans 0.1..1000 game metres. A 16-bit depth buffer
     // does not have enough precision across that range and causes distant
     // coplanar/model surfaces to break into visible stripes and triangles.
-    // Quest 3 exposes GLES 3 and supports the 24-bit renderbuffer format,
-    // matching the precision expected by the normal Android render path.
+    // Standalone headsets expose GLES 3 and support the 24-bit renderbuffer
+    // format, matching the precision expected by the normal Android render
+    // path.
     // The legacy GLES2 headers used by this project do not expose the core
     // GLES3 name, despite GL_OES_depth24 using the same enum value.
     const GLenum depthComponent24=0x81A6; // GL_DEPTH_COMPONENT24[_OES]
@@ -803,13 +821,57 @@ static bool CreateInputActions()
         {g.handPoseAction, path("/user/hand/left/input/grip/pose")},
         {g.handPoseAction, path("/user/hand/right/input/grip/pose")}
     };
-    XrInteractionProfileSuggestedBinding suggested = {XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
-    suggested.interactionProfile = path("/interaction_profiles/oculus/touch_controller");
-    suggested.countSuggestedBindings = sizeof(bindings) / sizeof(bindings[0]);
-    suggested.suggestedBindings = bindings;
-    if (XR_FAILED(g.SuggestInteractionProfileBindings(g.instance, &suggested))) return false;
-    XRLOG("Touch controller action bindings created");
+    // A runtime rejects an entire suggestion when it does not know the
+    // profile or one of its paths, so each profile is offered on its own and
+    // only one has to be accepted.  Meta's runtime binds the Touch profile;
+    // Android XR binds Touch for its 6DoF controllers and, like every
+    // conformant runtime, understands the Khronos simple controller.
+    auto suggest = [&](const char* profile, const XrActionSuggestedBinding* list,
+                       size_t count) -> bool {
+        XrInteractionProfileSuggestedBinding suggested = {XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+        suggested.interactionProfile = path(profile);
+        suggested.countSuggestedBindings = static_cast<uint32_t>(count);
+        suggested.suggestedBindings = list;
+        const XrResult result = g.SuggestInteractionProfileBindings(g.instance, &suggested);
+        XRLOG("%s: %s", profile, XR_SUCCEEDED(result) ? "bound" : "unsupported");
+        return XR_SUCCEEDED(result);
+    };
+    bool bound = suggest("/interaction_profiles/oculus/touch_controller",
+                         bindings, sizeof(bindings) / sizeof(bindings[0]));
+    // The Khronos simple controller is the mandatory lowest common
+    // denominator.  It defines no thumbsticks or face buttons, so only the
+    // paths it actually declares may be listed here.
+    const XrActionSuggestedBinding simpleBindings[] = {
+        {g.selectAction, path("/user/hand/right/input/select/click")},
+        {g.backAction, path("/user/hand/left/input/select/click")},
+        {g.menuAction, path("/user/hand/left/input/menu/click")},
+        {g.handPoseAction, path("/user/hand/left/input/grip/pose")},
+        {g.handPoseAction, path("/user/hand/right/input/grip/pose")}
+    };
+    bound = suggest("/interaction_profiles/khr/simple_controller", simpleBindings,
+                    sizeof(simpleBindings) / sizeof(simpleBindings[0])) || bound;
+    if (!bound) { XRERR("no interaction profile accepted the gameplay bindings"); return false; }
     return true;
+}
+
+// Reports which profile the runtime actually chose for each hand.  The
+// suggestion above covers several profiles, so this is the only way to tell
+// from a device log whether the full controller mapping or the simple
+// fallback is live.
+static void LogActiveInteractionProfiles()
+{
+    if (!g.session || !g.GetCurrentInteractionProfile || !g.PathToString) return;
+    const XrPath hands[2] = {g.leftHand, g.rightHand};
+    for (unsigned hand = 0; hand < 2; ++hand)
+    {
+        XrInteractionProfileState state = {XR_TYPE_INTERACTION_PROFILE_STATE};
+        if (XR_FAILED(g.GetCurrentInteractionProfile(g.session, hands[hand], &state))) continue;
+        char name[XR_MAX_PATH_LENGTH] = "<none>";
+        uint32_t length = 0;
+        if (state.interactionProfile != XR_NULL_PATH)
+            g.PathToString(g.instance, state.interactionProfile, sizeof(name), &length, name);
+        XRLOG("%s hand interaction profile: %s", hand == 0 ? "left" : "right", name);
+    }
 }
 
 static void SyncInputActions()
@@ -1008,7 +1070,12 @@ void SetRenderScale(float scale)
 float GetRenderScale(){ return g.renderScale; }
 void SetRefreshRate(float hz)
 {
-    if(hz!=72.0f && hz!=90.0f && hz!=120.0f) return;
+    // Only rates this headset actually advertises are accepted.  The list is
+    // whatever the runtime enumerated at start-up, not a fixed 72/90/120 set.
+    bool supported=false;
+    for(size_t i=0;i<g.refreshRates.size();++i)
+        if(std::fabs(g.refreshRates[i]-hz)<0.1f) { supported=true; break; }
+    if(!supported) return;
     if(std::fabs(hz-g.refreshRate)<0.1f) return;
     if(g.session && g.RequestDisplayRefreshRateFB)
     {
@@ -1024,6 +1091,17 @@ void SetRefreshRate(float hz)
     XRLOG("%.0f Hz refresh rate applied",hz);
 }
 float GetRefreshRate(){ return g.refreshRate; }
+unsigned GetSupportedRefreshRateCount(){ return static_cast<unsigned>(g.refreshRates.size()); }
+float GetSupportedRefreshRate(unsigned index)
+{
+    return index<g.refreshRates.size()?g.refreshRates[index]:g.refreshRate;
+}
+unsigned GetRefreshRateIndex()
+{
+    for(size_t i=0;i<g.refreshRates.size();++i)
+        if(std::fabs(g.refreshRates[i]-g.refreshRate)<0.1f) return static_cast<unsigned>(i);
+    return 0;
+}
 bool IsHorizontalMenuInputDominant(){ return g.menuHorizontalInputDominant; }
 bool IsVerticalMenuInputDominant(){ return g.menuVerticalInputDominant; }
 bool IsRightEyeRendering(){ return g.activeEye==2; }
@@ -1211,8 +1289,12 @@ bool Initialize()
                             if(std::fscanf(file,"\nrenderScale=%f",&renderScale)==1)
                             {
                                 g.renderScale=std::max(0.10f,std::min(2.0f,renderScale));
+                                // Accept any plausible rate: the set a headset
+                                // offers is enumerated from the runtime at
+                                // start-up, and a preference outside it simply
+                                // falls back to the lowest advertised rate.
                                 if(std::fscanf(file,"\nrefreshRate=%f",&refreshRate)==1 &&
-                                   (refreshRate==72.0f || refreshRate==90.0f || refreshRate==120.0f))
+                                   refreshRate>=30.0f && refreshRate<=240.0f)
                                     g.refreshRate=refreshRate;
                                 if(std::fscanf(file,"\nvrSteeringWheel=%d",&vrSteeringWheel)==1)
                                     g.vehicleControlMode=std::max(0,std::min(2,vrSteeringWheel));
@@ -1249,10 +1331,40 @@ bool Initialize()
         li.applicationContext=activity;
         if (XR_FAILED(initLoader(reinterpret_cast<XrLoaderInitInfoBaseHeaderKHR*>(&li)))) return false;
     }
-    const char* extensions[]={XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,
-                              XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME,
-                              XR_FB_COLOR_SPACE_EXTENSION_NAME,
-                              XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME};
+    // xrCreateInstance fails outright with XR_ERROR_EXTENSION_NOT_PRESENT when
+    // an unsupported extension is requested, so the optional vendor extensions
+    // have to be filtered against what this runtime reports rather than
+    // assumed.  The two KHR extensions are genuinely required: without them
+    // there is no Android instance and no GLES rendering.
+    PFN_xrEnumerateInstanceExtensionProperties enumerateExtensions=NULL;
+    g.getProc(XR_NULL_HANDLE,"xrEnumerateInstanceExtensionProperties",
+              reinterpret_cast<PFN_xrVoidFunction*>(&enumerateExtensions));
+    if(!enumerateExtensions) { XRERR("xrEnumerateInstanceExtensionProperties unavailable"); return false; }
+    uint32_t availableCount=0;
+    enumerateExtensions(NULL,0,&availableCount,NULL);
+    std::vector<XrExtensionProperties> available(availableCount,{XR_TYPE_EXTENSION_PROPERTIES});
+    if(availableCount && XR_FAILED(enumerateExtensions(NULL,availableCount,&availableCount,
+                                                       available.data())))
+    { XRERR("extension enumeration failed"); return false; }
+    auto supportsExtension=[&](const char* name){
+        for(uint32_t i=0;i<availableCount;++i)
+            if(!std::strcmp(available[i].extensionName,name)) return true;
+        return false; };
+    std::vector<const char*> extensions;
+    const char* const requiredExtensions[]={XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,
+                                            XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME};
+    for(unsigned i=0;i<sizeof(requiredExtensions)/sizeof(requiredExtensions[0]);++i)
+    {
+        if(!supportsExtension(requiredExtensions[i]))
+        { XRERR("runtime lacks required extension %s",requiredExtensions[i]); return false; }
+        extensions.push_back(requiredExtensions[i]);
+    }
+    g.hasColorSpace=supportsExtension(XR_FB_COLOR_SPACE_EXTENSION_NAME);
+    if(g.hasColorSpace) extensions.push_back(XR_FB_COLOR_SPACE_EXTENSION_NAME);
+    g.hasDisplayRefreshRate=supportsExtension(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
+    if(g.hasDisplayRefreshRate) extensions.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
+    XRLOG("runtime advertises %u extensions; colour space %s, display refresh rate %s",
+          availableCount,g.hasColorSpace?"yes":"no",g.hasDisplayRefreshRate?"yes":"no");
     XrInstanceCreateInfoAndroidKHR androidInfo={XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
     JNIEnv* env=static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
     JavaVM* vm=NULL; env->GetJavaVM(&vm); androidInfo.applicationVM=vm;
@@ -1262,13 +1374,15 @@ bool Initialize()
     ci.applicationInfo.applicationVersion=1;
     std::strncpy(ci.applicationInfo.engineName,"Pure3D",XR_MAX_ENGINE_NAME_SIZE-1);
     ci.applicationInfo.engineVersion=1; ci.applicationInfo.apiVersion=XR_CURRENT_API_VERSION;
-    ci.enabledExtensionCount=4; ci.enabledExtensionNames=extensions;
+    ci.enabledExtensionCount=static_cast<uint32_t>(extensions.size());
+    ci.enabledExtensionNames=extensions.data();
     PFN_xrCreateInstance createInstance=NULL;
     g.getProc(XR_NULL_HANDLE,"xrCreateInstance",reinterpret_cast<PFN_xrVoidFunction*>(&createInstance));
     if (!createInstance || XR_FAILED(createInstance(&ci,&g.instance))) { XRERR("xrCreateInstance failed"); return false; }
     LOAD_XR(DestroyInstance); LOAD_XR(GetSystem); LOAD_XR(GetOpenGLESGraphicsRequirementsKHR);
     LOAD_XR(CreateSession); LOAD_XR(DestroySession); LOAD_XR(CreateReferenceSpace); LOAD_XR(DestroySpace);
     LOAD_XR(EnumerateViewConfigurationViews); LOAD_XR(EnumerateSwapchainFormats); LOAD_XR(CreateSwapchain);
+    LOAD_XR(EnumerateEnvironmentBlendModes); LOAD_XR(GetCurrentInteractionProfile); LOAD_XR(PathToString);
     LOAD_XR(DestroySwapchain); LOAD_XR(EnumerateSwapchainImages); LOAD_XR(PollEvent); LOAD_XR(BeginSession);
     LOAD_XR(EndSession); LOAD_XR(WaitFrame); LOAD_XR(BeginFrame); LOAD_XR(LocateViews);
     LOAD_XR(AcquireSwapchainImage); LOAD_XR(WaitSwapchainImage); LOAD_XR(ReleaseSwapchainImage); LOAD_XR(EndFrame);
@@ -1279,6 +1393,25 @@ bool Initialize()
     if (!CreateInputActions()) { XRERR("controller action creation failed"); return false; }
     XrSystemGetInfo si={XR_TYPE_SYSTEM_GET_INFO}; si.formFactor=XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
     if (XR_FAILED(g.GetSystem(g.instance,&si,&g.system))) { XRERR("no HMD system"); return false; }
+    // Submit a blend mode the runtime advertises rather than assuming OPAQUE.
+    // A headset whose primary stereo configuration is passthrough-based
+    // rejects xrEndFrame otherwise.
+    {
+        uint32_t blendCount=0;
+        g.EnumerateEnvironmentBlendModes(g.instance,g.system,
+            XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,0,&blendCount,NULL);
+        std::vector<XrEnvironmentBlendMode> blendModes(blendCount);
+        if(blendCount && XR_FAILED(g.EnumerateEnvironmentBlendModes(g.instance,g.system,
+            XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,blendCount,&blendCount,blendModes.data())))
+            blendCount=0;
+        // SHAR renders an opaque world, so prefer OPAQUE and fall back to the
+        // runtime's own first choice when it is not offered.
+        g.blendMode=blendCount?blendModes[0]:XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+        for(uint32_t i=0;i<blendCount;++i)
+            if(blendModes[i]==XR_ENVIRONMENT_BLEND_MODE_OPAQUE)
+            { g.blendMode=XR_ENVIRONMENT_BLEND_MODE_OPAQUE; break; }
+        XRLOG("environment blend mode %d",static_cast<int>(g.blendMode));
+    }
     XrGraphicsRequirementsOpenGLESKHR req={XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_ES_KHR};
     if (XR_FAILED(g.GetOpenGLESGraphicsRequirementsKHR(g.instance,g.system,&req))) return false;
     XrGraphicsBindingOpenGLESAndroidKHR binding={XR_TYPE_GRAPHICS_BINDING_OPENGL_ES_ANDROID_KHR};
@@ -1289,25 +1422,67 @@ bool Initialize()
     eglChooseConfig(binding.display,attrs,&binding.config,1,&found);
     XrSessionCreateInfo sci={XR_TYPE_SESSION_CREATE_INFO}; sci.next=&binding; sci.systemId=g.system;
     if (!found || XR_FAILED(g.CreateSession(g.instance,&sci,&g.session))) { XRERR("xrCreateSession failed"); return false; }
-    g.getProc(g.instance,"xrRequestDisplayRefreshRateFB",reinterpret_cast<PFN_xrVoidFunction*>(&g.RequestDisplayRefreshRateFB));
-    if(g.RequestDisplayRefreshRateFB)
+    if(g.hasDisplayRefreshRate)
     {
-        const XrResult refreshResult=g.RequestDisplayRefreshRateFB(g.session,g.refreshRate);
-        XRLOG("%.0f Hz refresh rate: %s (%d)",g.refreshRate,XR_SUCCEEDED(refreshResult)?"requested":"rejected",static_cast<int>(refreshResult));
+        g.getProc(g.instance,"xrRequestDisplayRefreshRateFB",
+                  reinterpret_cast<PFN_xrVoidFunction*>(&g.RequestDisplayRefreshRateFB));
+        g.getProc(g.instance,"xrEnumerateDisplayRefreshRatesFB",
+                  reinterpret_cast<PFN_xrVoidFunction*>(&g.EnumerateDisplayRefreshRatesFB));
+    }
+    // Which rates exist is a property of the headset.  Ask the runtime instead
+    // of offering a fixed list, and leave the rate alone entirely when the
+    // extension is absent.
+    g.refreshRates.clear();
+    if(g.EnumerateDisplayRefreshRatesFB)
+    {
+        uint32_t rateCount=0;
+        g.EnumerateDisplayRefreshRatesFB(g.session,0,&rateCount,NULL);
+        g.refreshRates.resize(rateCount);
+        if(rateCount && XR_FAILED(g.EnumerateDisplayRefreshRatesFB(g.session,rateCount,&rateCount,
+                                                                  g.refreshRates.data())))
+            g.refreshRates.clear();
+        std::sort(g.refreshRates.begin(),g.refreshRates.end());
+    }
+    if(g.refreshRates.empty())
+    {
+        XRLOG("display refresh rate control unavailable; using the runtime default");
     }
     else
     {
-        XRERR("display refresh rate function unavailable");
+        // Honour the saved preference only when this headset offers it.  The
+        // lowest advertised rate is the safe default everywhere else.
+        float selected=g.refreshRates.front();
+        for(size_t i=0;i<g.refreshRates.size();++i)
+            if(std::fabs(g.refreshRates[i]-g.refreshRate)<0.1f) { selected=g.refreshRates[i]; break; }
+        if(g.RequestDisplayRefreshRateFB)
+        {
+            const XrResult refreshResult=g.RequestDisplayRefreshRateFB(g.session,selected);
+            XRLOG("%.0f Hz refresh rate: %s (%d)",selected,
+                  XR_SUCCEEDED(refreshResult)?"requested":"rejected",
+                  static_cast<int>(refreshResult));
+        }
+        g.refreshRate=selected;
     }
-    g.getProc(g.instance,"xrSetColorSpaceFB",reinterpret_cast<PFN_xrVoidFunction*>(&g.SetColorSpaceFB));
-    if(g.SetColorSpaceFB)
+    if(g.hasColorSpace)
     {
-        XrResult colorResult=g.SetColorSpaceFB(g.session,XR_COLOR_SPACE_REC709_FB);
-        XRLOG("Rec.709 color space: %s",XR_SUCCEEDED(colorResult)?"enabled":"rejected");
+        g.getProc(g.instance,"xrSetColorSpaceFB",reinterpret_cast<PFN_xrVoidFunction*>(&g.SetColorSpaceFB));
+        if(g.SetColorSpaceFB)
+        {
+            const XrResult colorResult=g.SetColorSpaceFB(g.session,XR_COLOR_SPACE_REC709_FB);
+            XRLOG("Rec.709 color space: %s",XR_SUCCEEDED(colorResult)?"enabled":"rejected");
+        }
+    }
+    else
+    {
+        // The sRGB swapchain format selected below already carries the
+        // intended transfer function, so this only forfeits the explicit
+        // primaries hint, not correct output.
+        XRLOG("colour space control unavailable; using the runtime default");
     }
     XrSessionActionSetsAttachInfo attach={XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
     attach.countActionSets=1; attach.actionSets=&g.actionSet;
     if (XR_FAILED(g.AttachSessionActionSets(g.session,&attach))) { XRERR("controller action attach failed"); return false; }
+    LogActiveInteractionProfiles();
     for(unsigned hand=0; hand<2; ++hand)
     {
         XrActionSpaceCreateInfo actionSpace={XR_TYPE_ACTION_SPACE_CREATE_INFO};
@@ -1369,12 +1544,19 @@ void PollEvents()
             if(s->state==XR_SESSION_STATE_READY) { XrSessionBeginInfo bi={XR_TYPE_SESSION_BEGIN_INFO}; bi.primaryViewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO; if(XR_SUCCEEDED(g.BeginSession(g.session,&bi))) g.running=true; }
             else if(s->state==XR_SESSION_STATE_STOPPING) { g.EndSession(g.session); g.running=false; }
         }
+        else if(ev.type==XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
+            // Which profile the runtime picks depends on the headset and on
+            // what the user has powered on, so report the live choice rather
+            // than assuming the one suggested first.
+            LogActiveInteractionProfiles();
+        }
         else if(ev.type==XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) {
             const XrEventDataReferenceSpaceChangePending* change=
                 reinterpret_cast<const XrEventDataReferenceSpaceChangePending*>(&ev);
-            // Quest owns the long-press Meta-button gesture. It reports the
-            // resulting native recenter here rather than exposing that button
-            // as an application input action.
+            // The system owns its own recenter gesture (a long press of the
+            // Meta button on Horizon OS, of the home control on Android XR).
+            // Runtimes report the resulting recenter here rather than exposing
+            // that button as an application input action.
             g.systemRecenterPending=true;
             g.systemRecenterTime=change->changeTime;
             XRLOG("system recenter pending: space=%d time=%lld",
@@ -3040,7 +3222,7 @@ void EndFrame()
     for(unsigned i=0;i<2;++i){ pv[i].pose=g.eyes[i].view.pose; pv[i].fov=g.eyes[i].view.fov; pv[i].subImage.swapchain=g.eyes[0].swapchain; pv[i].subImage.imageRect.extent.width=g.eyes[i].width; pv[i].subImage.imageRect.extent.height=g.eyes[i].height; pv[i].subImage.imageArrayIndex=i; }
     XrCompositionLayerProjection layer={XR_TYPE_COMPOSITION_LAYER_PROJECTION}; layer.space=g.space; layer.viewCount=2; layer.views=pv;
     const XrCompositionLayerBaseHeader* layers[]={reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer)};
-    XrFrameEndInfo ei={XR_TYPE_FRAME_END_INFO}; ei.displayTime=g.frameState.predictedDisplayTime; ei.environmentBlendMode=XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    XrFrameEndInfo ei={XR_TYPE_FRAME_END_INFO}; ei.displayTime=g.frameState.predictedDisplayTime; ei.environmentBlendMode=g.blendMode;
     ei.layerCount=g.shouldRender?1:0; ei.layers=g.shouldRender?layers:NULL;
     const Uint64 submitStart=SDL_GetPerformanceCounter();
     g.EndFrame(g.session,&ei);

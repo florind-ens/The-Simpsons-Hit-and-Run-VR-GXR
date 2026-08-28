@@ -101,6 +101,11 @@ namespace SharOpenXR
     float GetRenderScale();
     void SetRefreshRate(float hz);
     float GetRefreshRate();
+    // The rates this headset advertises, enumerated from the runtime.  Empty
+    // when the runtime offers no refresh-rate control at all.
+    unsigned GetSupportedRefreshRateCount();
+    float GetSupportedRefreshRate(unsigned index);
+    unsigned GetRefreshRateIndex();
     void ApplyGtao();
     bool IsHorizontalMenuInputDominant();
     bool IsVerticalMenuInputDominant();

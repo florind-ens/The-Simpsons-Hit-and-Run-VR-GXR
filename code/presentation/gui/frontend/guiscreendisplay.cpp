@@ -239,9 +239,21 @@ MEMTRACK_PUSH_GROUP( "CGuiScreenDisplay" );
                 value->SetColour( materialsValue->GetColour() );
                 value->SetDisplayOutline( valueTemplate->IsDisplayingOutline() );
                 value->SetOutlineColour( valueTemplate->GetOutlineColour() );
-                value->AddHardCodedString( "72 Hz" );
-                value->AddHardCodedString( "90 Hz" );
-                value->AddHardCodedString( "120 Hz" );
+                // Label the row from the rates the runtime actually offers.
+                // Headsets differ, and a runtime without the refresh-rate
+                // extension offers none at all.
+                const unsigned rateCount = SharOpenXR::GetSupportedRefreshRateCount();
+                if( rateCount == 0 )
+                {
+                    value->AddHardCodedString( "Default" );
+                }
+                for( unsigned rateIndex = 0; rateIndex < rateCount; ++rateIndex )
+                {
+                    char rateText[ 16 ];
+                    std::sprintf( rateText, "%.0f Hz",
+                                  SharOpenXR::GetSupportedRefreshRate( rateIndex ) );
+                    value->AddHardCodedString( rateText );
+                }
                 refreshValue = value;
 
                 const char* names[2]={"ColourDepth_ArrowL","ColourDepth_ArrowR"};
@@ -272,7 +284,12 @@ MEMTRACK_PUSH_GROUP( "CGuiScreenDisplay" );
             m_pMenu->AddMenuItem( refreshLabel, refreshValue,
                                   NULL,NULL,refreshLeft,refreshRight,
                                   SELECTION_ENABLED | VALUES_WRAPPED | TEXT_OUTLINE_ENABLED );
-            m_pMenu->SetSelectionValueCount( MENU_ITEM_REFRESH_RATE, 3 );
+            // The item is always added so the eMenuItem indices stay fixed;
+            // a single value simply makes it non-adjustable.
+            const unsigned refreshValueCount = SharOpenXR::GetSupportedRefreshRateCount();
+            m_pMenu->SetSelectionValueCount( MENU_ITEM_REFRESH_RATE,
+                                             refreshValueCount > 0 ?
+                                                 static_cast< int >( refreshValueCount ) : 1 );
         }
     }
 
@@ -432,8 +449,12 @@ void CGuiScreenDisplay::HandleMessage
 #ifdef RAD_ANDROID
                     case MENU_ITEM_REFRESH_RATE:
                     {
-                        const float current=SharOpenXR::GetRefreshRate();
-                        SharOpenXR::SetRefreshRate(current<80.0f?90.0f:(current<105.0f?120.0f:72.0f));
+                        const unsigned count=SharOpenXR::GetSupportedRefreshRateCount();
+                        if(count>1)
+                        {
+                            const unsigned next=(SharOpenXR::GetRefreshRateIndex()+1)%count;
+                            SharOpenXR::SetRefreshRate(SharOpenXR::GetSupportedRefreshRate(next));
+                        }
                         UpdateVrDisplayLabels();
                         break;
                     }
@@ -458,8 +479,8 @@ void CGuiScreenDisplay::HandleMessage
 #ifdef RAD_ANDROID
                     case MENU_ITEM_REFRESH_RATE:
                     {
-                        const float rates[3]={72.0f,90.0f,120.0f};
-                        if(param2<3) SharOpenXR::SetRefreshRate(rates[param2]);
+                        if(param2<SharOpenXR::GetSupportedRefreshRateCount())
+                            SharOpenXR::SetRefreshRate(SharOpenXR::GetSupportedRefreshRate(param2));
                         UpdateVrDisplayLabels();
                         break;
                     }
@@ -655,8 +676,7 @@ void CGuiScreenDisplay::UpdateVrDisplayLabels()
     }
     if( m_pRefreshRateLabel != NULL )
     {
-        const float rate=SharOpenXR::GetRefreshRate();
-        const int selection=rate<80.0f?0:(rate<105.0f?1:2);
+        const int selection=static_cast<int>(SharOpenXR::GetRefreshRateIndex());
         // SetSelectionValue emits GUI_MSG_MENU_SELECTION_VALUE_CHANGED.  Do
         // not emit it again while handling that same notification.
         if(m_pMenu->GetSelectionValue(MENU_ITEM_REFRESH_RATE)!=selection)

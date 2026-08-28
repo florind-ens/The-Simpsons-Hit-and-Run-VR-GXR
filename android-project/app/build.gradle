@@ -22,7 +22,8 @@ android {
                         "-DANDROID=ON",
                         "-DSRR2_BUILD_TESTS=OFF",
                         "-DSRR2_REGION=PAL"
-                // Meta Quest standalone devices are arm64-only.
+                // Standalone headsets (Horizon OS and Android XR alike) are
+                // arm64-only.
                 abiFilters 'arm64-v8a'
 
             }
