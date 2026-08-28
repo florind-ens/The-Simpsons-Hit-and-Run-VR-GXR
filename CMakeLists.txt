@@ -179,19 +179,28 @@ else()
 				libswscale
 		)
 	else()
-		# ✅ ANDROID: obtener FFmpeg desde Prefab (AAR com.fpliu...:ffmpeg)
-    # Prefab expone un paquete CMake. Normalmente se encuentra con find_package().
-    find_package(ffmpeg CONFIG REQUIRED)
-
-    # ✅ Creamos una "lista" de targets/librerías para linkear después donde toque.
-    # Nota: los nombres exactos pueden variar según el paquete; si falla, te digo cómo inspeccionarlos.
-    set(SRR2_FFMPEG_LIBS
-        ffmpeg::avcodec
-        ffmpeg::avformat
-        ffmpeg::avutil
-        ffmpeg::swresample
-        ffmpeg::swscale
-		)
+		# ANDROID: FFmpeg is built from the vendored source in libs/ffmpeg by
+		# tools/build-ffmpeg-android.sh.  This used to resolve a prefab AAR
+		# (com.fpliu.ndk.pkg.prefab.android.21:ffmpeg:6.0) that is not
+		# published on Maven Central or anywhere else reachable, so the build
+		# could not be reproduced away from the original author's machine.
+		set(SRR2_FFMPEG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/libs/ffmpeg-android/${ANDROID_ABI}")
+		if(NOT EXISTS "${SRR2_FFMPEG_ROOT}/lib/libavcodec.a")
+			message(FATAL_ERROR
+				"FFmpeg for ${ANDROID_ABI} is missing from ${SRR2_FFMPEG_ROOT}. "
+				"Run tools/build-ffmpeg-android.sh before building the APK.")
+		endif()
+		add_library(ffmpeg_prebuilt INTERFACE)
+		target_include_directories(ffmpeg_prebuilt INTERFACE "${SRR2_FFMPEG_ROOT}/include")
+		# Static archives, so dependents have to precede their dependencies.
+		target_link_libraries(ffmpeg_prebuilt INTERFACE
+			"${SRR2_FFMPEG_ROOT}/lib/libavformat.a"
+			"${SRR2_FFMPEG_ROOT}/lib/libavcodec.a"
+			"${SRR2_FFMPEG_ROOT}/lib/libswscale.a"
+			"${SRR2_FFMPEG_ROOT}/lib/libswresample.a"
+			"${SRR2_FFMPEG_ROOT}/lib/libavutil.a"
+			z m)
+		set(SRR2_FFMPEG_LIBS ffmpeg_prebuilt)
 	endif()
 endif()
 

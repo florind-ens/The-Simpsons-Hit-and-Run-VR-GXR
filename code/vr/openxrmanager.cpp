@@ -637,14 +637,16 @@ static void ApplyFoveation()
     XrFoveationProfileCreateInfoFB profileInfo={XR_TYPE_FOVEATION_PROFILE_CREATE_INFO_FB};
     profileInfo.next=&levelInfo;
     XrFoveationProfileFB profile=XR_NULL_HANDLE;
-    if(XR_FAILED(g.CreateFoveationProfileFB(g.session,&profileInfo,&profile)))
-    { XRERR("foveation profile creation failed"); return; }
+    const XrResult profileResult=g.CreateFoveationProfileFB(g.session,&profileInfo,&profile);
+    if(XR_FAILED(profileResult))
+    { XRERR("foveation profile creation failed (%d)",static_cast<int>(profileResult)); return; }
     // Both views share one two-layer swapchain, so one update covers the pair.
     XrSwapchainStateFoveationFB state={XR_TYPE_SWAPCHAIN_STATE_FOVEATION_FB};
     state.profile=profile;
     const XrResult result=g.UpdateSwapchainFB(g.eyes[0].swapchain,
         reinterpret_cast<XrSwapchainStateBaseHeaderFB*>(&state));
-    XRLOG("foveation %s: %s",names[level],XR_SUCCEEDED(result)?"applied":"rejected");
+    XRLOG("foveation %s: %s (%d)",names[level],XR_SUCCEEDED(result)?"applied":"rejected",
+          static_cast<int>(result));
     g.DestroyFoveationProfileFB(profile);
 }
 
@@ -720,6 +722,7 @@ static bool CreateSwapchains()
         // the flags at zero lets the runtime pick its own mechanism (scaled
         // bins or a fragment density map).
         XrSwapchainCreateInfoFoveationFB foveationCreate={XR_TYPE_SWAPCHAIN_CREATE_INFO_FOVEATION_FB};
+        foveationCreate.flags=XR_SWAPCHAIN_CREATE_FOVEATION_SCALED_BIN_BIT_FB;
         if(g.hasFoveation) ci.next=&foveationCreate;
         ci.usageFlags=XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
         ci.format=chosen; ci.sampleCount=1; ci.width=e.width; ci.height=e.height;

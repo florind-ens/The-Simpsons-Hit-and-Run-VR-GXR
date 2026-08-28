@@ -621,15 +621,7 @@ if(SRR2_USE_BINK)
     target_link_libraries(${SRR2_TARGET} bink)
 else()
     if(ANDROID)
-        find_package(ffmpeg CONFIG REQUIRED)
-        target_link_libraries(${SRR2_TARGET}
-            ffmpeg::headers
-            ffmpeg::libavcodec.so
-            ffmpeg::libavformat.so
-            ffmpeg::libavutil.so
-            ffmpeg::libswresample.so
-            ffmpeg::libswscale.so
-        )
+        target_link_libraries(${SRR2_TARGET} ${SRR2_FFMPEG_LIBS})
     else()
         target_link_libraries(${SRR2_TARGET} PkgConfig::FFmpeg)
     endif()

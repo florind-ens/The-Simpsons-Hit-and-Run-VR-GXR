@@ -89,11 +89,6 @@ else()  # Si no estamos usando Bink, usamos FFmpeg para el manejo de video
         "src/common/binkrenderstrategy.cpp"
         "src/pch/pch.cpp"
     )
-if(ANDROID)
-		find_package(ffmpeg CONFIG REQUIRED)
-		# ✅ CAMBIO: lista de libs/targets de FFmpeg a linkear desde Prefab
-		
-endif()  
 endif()  # ✅ ESTE es el fin del if(SRR2_USE_BINK)
 
 # Crear la biblioteca estática para el proyecto radmovie
@@ -119,23 +114,11 @@ if(ANDROID)
     target_link_libraries(radmovie PRIVATE OpenAL)
 	
 endif()
-# ✅ Linkear FFmpeg SOLO si NO usas Bink y estás en Android
-# ✅ Android + FFmpeg: asegurar includes y libs
-# ✅ Android + FFmpeg (Prefab): localizar headers y libs
+# Android + FFmpeg: headers and archives come from the tree built by
+# tools/build-ffmpeg-android.sh, wired up as ffmpeg_prebuilt in the root
+# CMakeLists.
 if(ANDROID AND NOT SRR2_USE_BINK)
-    find_package(ffmpeg CONFIG REQUIRED)
-
-    # headers
-    target_link_libraries(radmovie PRIVATE ffmpeg::headers)
-
-    # libs (elige .so o .a según prefieras)
-    target_link_libraries(radmovie PRIVATE
-        ffmpeg::libavcodec.so
-        ffmpeg::libavformat.so
-        ffmpeg::libavutil.so
-        ffmpeg::libswresample.so
-        ffmpeg::libswscale.so
-    )
+    target_link_libraries(radmovie PRIVATE ${SRR2_FFMPEG_LIBS})
 endif()
 
 

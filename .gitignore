@@ -27,6 +27,9 @@ local.properties
 .vscode/
 *.iml
 
+# FFmpeg built by tools/build-ffmpeg-android.sh
+libs/ffmpeg-android/
+
 # APKs and release files
 APKs/
 *.apk
