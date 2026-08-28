@@ -83,14 +83,68 @@
 
   You must provide your own legal copy of the PC version of **The Simpsons: Hit & Run**. Original game files are not included with this project.
 
-  1. Create a “SimpsonsHitRun” folder in the root of the headset's internal
+  Enable developer mode and USB debugging on the headset, connect it over USB,
+  and accept the debugging prompt that appears inside the headset.
+
+  ### With the install script
+
+  `tools/install.py` runs on Linux, Windows and macOS. It needs Python 3 and
+  [Android platform-tools](https://developer.android.com/tools/releases/platform-tools);
+  nothing else. It installs the APK, copies the game data, and grants the
+  all-files permission so you never see the permission screen in the headset.
+
+  ```
+  python3 tools/install.py --game-dir "/path/to/Simpsons"
+  python  tools\install.py --game-dir "C:\Games\Simpsons Hit & Run\Simpsons"
+  ```
+
+  Point `--game-dir` at the folder that holds `art/`, `movies/` and the `.rcf`
+  files. The first run copies about 1.8 GB and takes a while; the copy is a
+  sync, so it is safe to interrupt and re-run, and later runs only send what
+  changed.
+
+  Useful options: `--launch` starts the game when it finishes, `--skip-data`
+  reinstalls only the APK, `--device SERIAL` picks one of several connected
+  headsets (`--list-devices` shows them), and `--apk PATH` installs a specific
+  build. `--help` lists the rest.
+
+  ### By hand
+
+  1. Create a `SimpsonsHitRun` folder in the root of the headset's internal
      shared storage (`Internal shared storage\SimpsonsHitRun` on Quest,
      `/sdcard/SimpsonsHitRun` on Android XR)
-  2. Copy all the files from the PC version of the game (without mods, the original version) into folder SimpsonsHitRun
-  3. Install the apk and play
+  2. Copy all the files from the PC version of the game (without mods, the
+     original version) into that folder
+  3. Install the APK: `adb install -r app-release.apk`
 
   On first launch the game opens the system “All files access” screen; grant
-  it so the game can read that folder.
+  it so the game can read that folder. To skip that step:
+  `adb shell appops set com.simpsonsHitAndRun.vr MANAGE_EXTERNAL_STORAGE allow`
+
+  ## Building
+
+  Needs the Android SDK, an NDK matching `ndkVersion` in
+  `android-project/app/build.gradle`, and a JDK 17 or newer (Android Studio's
+  bundled one works).
+
+  FFmpeg has to be built once before the first APK build. It comes from the
+  source vendored in `libs/ffmpeg`:
+
+  ```
+  tools/build-ffmpeg-android.sh
+  ```
+
+  That script is bash; on Windows run it under WSL, Git Bash or MSYS2. Then
+  build the APK:
+
+  ```
+  build-apk.bat                                                   # Windows
+  ./android-project/gradlew -p android-project assembleRelease    # Linux/macOS
+  ```
+
+  The APK lands in
+  `android-project/app/build/outputs/apk/release/app-release.apk`, which is
+  where `tools/install.py` looks by default.
 
   ## Known Gaps on Android XR
 
