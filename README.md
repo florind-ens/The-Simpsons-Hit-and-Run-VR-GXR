@@ -131,11 +131,17 @@
   source vendored in `libs/ffmpeg`:
 
   ```
-  tools/build-ffmpeg-android.sh
+  tools/build-ffmpeg-android.sh     # Linux/macOS
+  tools\build-ffmpeg-android.bat    # Windows
   ```
 
-  That script is bash; on Windows run it under WSL, Git Bash or MSYS2. Then
-  build the APK:
+  FFmpeg's configure is a POSIX shell script and its build is driven by make,
+  so Windows cannot run it natively. The `.bat` is only a launcher: it finds a
+  shell and calls the same `.sh`. Install [MSYS2](https://www.msys2.org) and
+  `pacman -S make diffutils` first. Git Bash will not do, as it ships no make.
+  A WSL shell works too, but then the NDK has to be the Linux one.
+
+  Then build the APK:
 
   ```
   build-apk.bat                                                   # Windows

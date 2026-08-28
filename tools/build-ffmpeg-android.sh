@@ -20,19 +20,37 @@ SRC="$ROOT/libs/ffmpeg"
 PREFIX="$ROOT/libs/ffmpeg-android/arm64-v8a"
 API=24
 
+# Windows has no POSIX shell of its own, so this runs under MSYS2 (or WSL with
+# a Linux NDK). tools/build-ffmpeg-android.bat finds one and calls this script.
+CLANG_SUFFIX=""
+case "$(uname -s)" in
+    Darwin)               HOST_TAG=darwin-x86_64 ;;
+    Linux)                HOST_TAG=linux-x86_64 ;;
+    MINGW*|MSYS*|CYGWIN*) HOST_TAG=windows-x86_64; CLANG_SUFFIX=".cmd" ;;
+    *) echo "error: unsupported build host $(uname -s)" >&2; exit 1 ;;
+esac
+
+WINDOWS_NDK_ROOT=""
+if [ -n "${LOCALAPPDATA:-}" ] && command -v cygpath >/dev/null 2>&1; then
+    WINDOWS_NDK_ROOT="$(cygpath -u "$LOCALAPPDATA")/Android/Sdk/ndk"
+fi
+
 NDK="${1:-${ANDROID_NDK_HOME:-}}"
 if [ -z "$NDK" ]; then
-    for candidate in "$HOME/Library/Android/sdk/ndk"/*; do
-        [ -d "$candidate" ] && NDK="$candidate"
+    # Quoted one per line rather than split from a single string, so a home
+    # directory with a space in it still resolves. Highest version wins.
+    for root in \
+        "$HOME/Library/Android/sdk/ndk" \
+        "$HOME/Android/Sdk/ndk" \
+        "$WINDOWS_NDK_ROOT"
+    do
+        [ -n "$root" ] && [ -d "$root" ] || continue
+        for candidate in "$root"/*; do
+            [ -d "$candidate" ] && NDK="$candidate"
+        done
     done
 fi
 [ -d "$NDK" ] || { echo "error: set ANDROID_NDK_HOME or pass the NDK directory" >&2; exit 1; }
-
-case "$(uname -s)" in
-    Darwin) HOST_TAG=darwin-x86_64 ;;
-    Linux)  HOST_TAG=linux-x86_64 ;;
-    *) echo "error: unsupported build host $(uname -s)" >&2; exit 1 ;;
-esac
 TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/$HOST_TAG"
 [ -d "$TOOLCHAIN" ] || { echo "error: no LLVM toolchain at $TOOLCHAIN" >&2; exit 1; }
 
@@ -51,7 +69,12 @@ echo "Install prefix: $PREFIX"
 
 mkdir -p "$WORK/src"
 # Kept between runs so a rebuild is incremental; delete $WORK to start clean.
-rsync -a --delete "$SRC/" "$WORK/src/"
+if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete "$SRC/" "$WORK/src/"
+else
+    # MSYS2 has no rsync by default.
+    cp -R "$SRC/." "$WORK/src/"
+fi
 # The vendored tree was committed without exec bits, so restore them on the
 # staging copy. configure and the ffbuild helpers are run as programs.
 find "$WORK/src" -type f \( -name '*.sh' -o -name '*.pl' -o -name 'configure' \) \
@@ -73,8 +96,8 @@ bash "$WORK/src/configure" \
     --cpu=armv8-a \
     --enable-cross-compile \
     --sysroot="$TOOLCHAIN/sysroot" \
-    --cc="$TOOLCHAIN/bin/aarch64-linux-android$API-clang" \
-    --cxx="$TOOLCHAIN/bin/aarch64-linux-android$API-clang++" \
+    --cc="$TOOLCHAIN/bin/aarch64-linux-android$API-clang$CLANG_SUFFIX" \
+    --cxx="$TOOLCHAIN/bin/aarch64-linux-android$API-clang++$CLANG_SUFFIX" \
     --ar="$TOOLCHAIN/bin/llvm-ar" \
     --nm="$TOOLCHAIN/bin/llvm-nm" \
     --ranlib="$TOOLCHAIN/bin/llvm-ranlib" \
@@ -96,7 +119,8 @@ bash "$WORK/src/configure" \
     --extra-cflags="-O2 -fPIC" \
     --extra-ldflags="-Wl,-z,max-page-size=16384"
 
-make -j"$(getconf _NPROCESSORS_ONLN)"
+JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 4)"
+make -j"$JOBS"
 make install
 
 rm -rf "$PREFIX"
