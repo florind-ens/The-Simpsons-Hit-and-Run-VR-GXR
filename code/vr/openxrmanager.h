@@ -106,6 +106,11 @@ namespace SharOpenXR
     unsigned GetSupportedRefreshRateCount();
     float GetSupportedRefreshRate(unsigned index);
     unsigned GetRefreshRateIndex();
+    // Fixed foveated rendering. Level is 0 off, 1 low, 2 medium, 3 high; the
+    // runtime is asked to modulate it dynamically at every level above off.
+    bool IsFoveationAvailable();
+    void SetFoveationLevel(int level);
+    int GetFoveationLevel();
     void ApplyGtao();
     bool IsHorizontalMenuInputDominant();
     bool IsVerticalMenuInputDominant();

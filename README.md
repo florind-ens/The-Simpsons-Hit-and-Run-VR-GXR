@@ -23,6 +23,7 @@
   - Smooth and snap turning.
   - VR steering-wheel vehicle control.
   - Adjustable refresh rate and render scale.
+  - Fixed foveated rendering, dynamically modulated by the runtime.
   - Cascaded shadow maps.
   - Enhanced materials and lighting.
 
@@ -59,6 +60,16 @@
     revises its recommendation for thermal reasons.
   - **Blend mode.** Chosen from the modes the system advertises for the
     primary stereo view configuration.
+  - **Foveation.** `XR_FB_foveation` is enabled where the runtime offers it,
+    together with `XR_FB_swapchain_update_state` and
+    `XR_FB_foveation_configuration`; both Horizon OS and Android XR advertise
+    the set. The eye swapchain is created foveation-capable and a level
+    profile is pushed at it, so nothing in the renderer or its shaders
+    changes. The level is `XR_FOVEATION_DYNAMIC_LEVEL_ENABLED_FB`, which lets
+    the runtime ease off whenever there is GPU headroom, and it defaults to
+    Medium. Off / Low / Medium / High are selectable from the VR settings
+    screen, and the choice is saved in `vrsettings.cfg`. The row is only shown
+    where the runtime supports foveation.
   - **16 KB pages.** Android 15 and newer run with 16 KB memory pages and
     Galaxy XR ships on Android 16, where a 4 KB-aligned `.so` will not load.
     The native build passes `-Wl,-z,max-page-size=16384` explicitly.
@@ -88,9 +99,6 @@
     game and needs thumbsticks, so `android.hardware.xr.input.controller` is
     declared (optional, so the package still installs) and the Galaxy XR
     controllers are needed to play.
-  - **No foveated rendering.** `XR_FB_foveation` is available on both
-    platforms and would be the highest-value next optimisation at this eye
-    resolution. It is not wired up.
   - **FFmpeg dependency.** `com.fpliu.ndk.pkg.prefab.android.21:ffmpeg:6.0` is
     not published on Maven Central, so it has to come from a local Maven
     repository. It is also a prebuilt `android-21` binary, which means its

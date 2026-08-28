@@ -259,11 +259,16 @@ struct State
     PFN_xrEnumerateEnvironmentBlendModes EnumerateEnvironmentBlendModes;
     PFN_xrGetCurrentInteractionProfile GetCurrentInteractionProfile;
     PFN_xrPathToString PathToString;
+    PFN_xrCreateFoveationProfileFB CreateFoveationProfileFB;
+    PFN_xrDestroyFoveationProfileFB DestroyFoveationProfileFB;
+    PFN_xrUpdateSwapchainFB UpdateSwapchainFB;
     // Vendor extensions are optional and differ between runtimes.  Meta's
     // runtime exposes the FB colour-space and display-refresh-rate
     // extensions; Android XR and other OpenXR runtimes may expose neither,
     // one, or both.  Nothing below may assume their presence.
-    bool hasColorSpace, hasDisplayRefreshRate, hasRecommendedResolution;
+    bool hasColorSpace, hasDisplayRefreshRate, hasRecommendedResolution, hasFoveation;
+    // 0 off, 1 low, 2 medium, 3 high.  Persisted in vrsettings.cfg.
+    int foveationLevel;
     // Android XR revises its recommended eye resolution as thermals allow.
     bool recommendedResolutionChanged;
     std::vector<float> refreshRates;
@@ -323,13 +328,14 @@ static void SaveVrSettings()
     std::string filename(path); filename+="vrsettings.cfg";
     if(FILE* file=std::fopen(filename.c_str(),"wb"))
     {
-        std::fprintf(file,"seated=%d\nsnap=%d\nsmooth=%.1f\nangle=%.1f\ncsm=%d\nenhancedMaterials=%d\ngtao=%d\nrenderScale=%.3f\nrefreshRate=%.0f\nvrSteeringWheel=%d\nvehicleLights=%d\nspatialHud=%d\ndeveloperMenus=%d\n",
+        std::fprintf(file,"seated=%d\nsnap=%d\nsmooth=%.1f\nangle=%.1f\ncsm=%d\nenhancedMaterials=%d\ngtao=%d\nrenderScale=%.3f\nrefreshRate=%.0f\nvrSteeringWheel=%d\nvehicleLights=%d\nspatialHud=%d\ndeveloperMenus=%d\nfoveation=%d\n",
                      g.seatedMode?1:0,g.snapTurnEnabled?1:0,
                      g.smoothTurnSpeed,g.snapTurnAngle,g.csmEnabled?1:0,
                      g.enhancedMaterialsEnabled?1:0,g.gtaoEnabled?1:0,
                      g.renderScale,g.refreshRate,g.vehicleControlMode,
                      g.vehicleLightMode,g.spatialHudEnabled?1:0,
-                     g.developerMenusEnabled?1:0);
+                     g.developerMenusEnabled?1:0,
+                     g.foveationLevel);
         std::fclose(file);
     }
     SDL_free(path);
@@ -607,6 +613,41 @@ static void MakeProjection(const XrFovf& fov, float n, float f, rmt::Matrix* m)
     m->Row4(3).Set(0, 0, (-2.0f*f*n)/(f-n), 0);
 }
 
+// Fixed foveated rendering.  The runtime shades the periphery of the eye
+// images at reduced rate, which is the cheapest large win available at this
+// eye resolution: nothing in the renderer or its shaders has to change,
+// because the profile is a property of the swapchain.
+static void ApplyFoveation()
+{
+    if(!g.hasFoveation || !g.session || !g.eyes[0].swapchain) return;
+    static const XrFoveationLevelFB levels[4]={XR_FOVEATION_LEVEL_NONE_FB,
+                                               XR_FOVEATION_LEVEL_LOW_FB,
+                                               XR_FOVEATION_LEVEL_MEDIUM_FB,
+                                               XR_FOVEATION_LEVEL_HIGH_FB};
+    static const char* const names[4]={"off","low","medium","high"};
+    const int level=std::max(0,std::min(3,g.foveationLevel));
+    XrFoveationLevelProfileCreateInfoFB levelInfo={XR_TYPE_FOVEATION_LEVEL_PROFILE_CREATE_INFO_FB};
+    levelInfo.level=levels[level];
+    levelInfo.verticalOffset=0.0f;
+    // Dynamic lets the runtime fall below the requested level whenever there
+    // is GPU headroom, so the peripheral blur only appears when it is buying
+    // a frame.
+    levelInfo.dynamic=level>0?XR_FOVEATION_DYNAMIC_LEVEL_ENABLED_FB
+                             :XR_FOVEATION_DYNAMIC_DISABLED_FB;
+    XrFoveationProfileCreateInfoFB profileInfo={XR_TYPE_FOVEATION_PROFILE_CREATE_INFO_FB};
+    profileInfo.next=&levelInfo;
+    XrFoveationProfileFB profile=XR_NULL_HANDLE;
+    if(XR_FAILED(g.CreateFoveationProfileFB(g.session,&profileInfo,&profile)))
+    { XRERR("foveation profile creation failed"); return; }
+    // Both views share one two-layer swapchain, so one update covers the pair.
+    XrSwapchainStateFoveationFB state={XR_TYPE_SWAPCHAIN_STATE_FOVEATION_FB};
+    state.profile=profile;
+    const XrResult result=g.UpdateSwapchainFB(g.eyes[0].swapchain,
+        reinterpret_cast<XrSwapchainStateBaseHeaderFB*>(&state));
+    XRLOG("foveation %s: %s",names[level],XR_SUCCEEDED(result)?"applied":"rejected");
+    g.DestroyFoveationProfileFB(profile);
+}
+
 static bool CreateSwapchains()
 {
     uint32_t count = 0;
@@ -675,6 +716,11 @@ static bool CreateSwapchains()
               i,g.renderScale*100.0f,configs[i].recommendedImageRectWidth,configs[i].recommendedImageRectHeight,
               configs[i].maxImageRectWidth,configs[i].maxImageRectHeight,e.width,e.height);
         XrSwapchainCreateInfo ci = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
+        // A swapchain can only be foveated if it was created for it.  Leaving
+        // the flags at zero lets the runtime pick its own mechanism (scaled
+        // bins or a fragment density map).
+        XrSwapchainCreateInfoFoveationFB foveationCreate={XR_TYPE_SWAPCHAIN_CREATE_INFO_FOVEATION_FB};
+        if(g.hasFoveation) ci.next=&foveationCreate;
         ci.usageFlags=XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
         ci.format=chosen; ci.sampleCount=1; ci.width=e.width; ci.height=e.height;
         ci.faceCount=1; ci.arraySize=2; ci.mipCount=1;
@@ -726,6 +772,9 @@ static bool CreateSwapchains()
     g.TexStorage3D(GL_TEXTURE_2D_ARRAY,1,GL_DEPTH_COMPONENT24,depthWidth,depthHeight,2);
     if(!CreateGtaoResources(depthWidth,depthHeight))
         XRERR("half-resolution GTAO resources unavailable");
+    // Swapchains are recreated whenever the render scale or the runtime's
+    // recommended resolution changes, and the profile does not survive that.
+    ApplyFoveation();
     g.appliedRenderScale=g.renderScale;
     g.renderScalePending=false;
     g.recommendedResolutionChanged=false;
@@ -1138,6 +1187,17 @@ unsigned GetRefreshRateIndex()
         if(std::fabs(g.refreshRates[i]-g.refreshRate)<0.1f) return static_cast<unsigned>(i);
     return 0;
 }
+bool IsFoveationAvailable(){ return g.hasFoveation; }
+int GetFoveationLevel(){ return g.foveationLevel; }
+void SetFoveationLevel(int level)
+{
+    level=std::max(0,std::min(3,level));
+    if(level==g.foveationLevel) return;
+    g.foveationLevel=level;
+    // The profile is swapped on the live swapchain; no rebuild is needed.
+    ApplyFoveation();
+    SaveVrSettings();
+}
 bool IsHorizontalMenuInputDominant(){ return g.menuHorizontalInputDominant; }
 bool IsVerticalMenuInputDominant(){ return g.menuVerticalInputDominant; }
 bool IsRightEyeRendering(){ return g.activeEye==2; }
@@ -1284,6 +1344,10 @@ bool Initialize()
     g.renderScale=1.0f;
     g.appliedRenderScale=1.0f;
     g.refreshRate=72.0f;
+    // Medium is the balanced default: dynamic foveation eases off from it
+    // whenever the GPU has headroom, and High remains available in the VR
+    // settings screen for anyone who wants the extra frame time.
+    g.foveationLevel=2;
     g.vehicleControlMode=0;
     g.vehicleLightMode=1;
     g.spatialHudEnabled=true;
@@ -1306,7 +1370,7 @@ bool Initialize()
         std::string filename(preferencePath); filename+="vrsettings.cfg";
         if(FILE* file=std::fopen(filename.c_str(),"rb"))
         {
-            int seated=0,snap=0,csm=1,enhancedMaterials=1,gtao=1,vrSteeringWheel=0,vehicleLights=1,spatialHud=1,developerMenus=0;
+            int seated=0,snap=0,csm=1,enhancedMaterials=1,gtao=1,vrSteeringWheel=0,vehicleLights=1,spatialHud=1,developerMenus=0,foveation=2;
             float speed=120.0f,angle=45.0f,renderScale=1.0f,refreshRate=72.0f;
             if(std::fscanf(file,"seated=%d\nsnap=%d\nsmooth=%f\nangle=%f",
                            &seated,&snap,&speed,&angle)==4)
@@ -1339,7 +1403,11 @@ bool Initialize()
                                 if(std::fscanf(file,"\nspatialHud=%d",&spatialHud)==1)
                                     g.spatialHudEnabled=spatialHud!=0;
                                 if(std::fscanf(file,"\ndeveloperMenus=%d",&developerMenus)==1)
+                                {
                                     g.developerMenusEnabled=developerMenus!=0;
+                                    if(std::fscanf(file,"\nfoveation=%d",&foveation)==1)
+                                        g.foveationLevel=std::max(0,std::min(3,foveation));
+                                }
                             }
                         }
                     }
@@ -1402,10 +1470,23 @@ bool Initialize()
     g.hasRecommendedResolution=supportsExtension(XR_ANDROID_RECOMMENDED_RESOLUTION_EXTENSION_NAME);
     if(g.hasRecommendedResolution)
         extensions.push_back(XR_ANDROID_RECOMMENDED_RESOLUTION_EXTENSION_NAME);
+    // Foveation needs all three: swapchain state to push a profile at the
+    // swapchain, foveation for the profile object itself, and the
+    // configuration extension for the level enum.  Both Horizon OS and
+    // Android XR advertise the set.
+    g.hasFoveation=supportsExtension(XR_FB_SWAPCHAIN_UPDATE_STATE_EXTENSION_NAME) &&
+                   supportsExtension(XR_FB_FOVEATION_EXTENSION_NAME) &&
+                   supportsExtension(XR_FB_FOVEATION_CONFIGURATION_EXTENSION_NAME);
+    if(g.hasFoveation)
+    {
+        extensions.push_back(XR_FB_SWAPCHAIN_UPDATE_STATE_EXTENSION_NAME);
+        extensions.push_back(XR_FB_FOVEATION_EXTENSION_NAME);
+        extensions.push_back(XR_FB_FOVEATION_CONFIGURATION_EXTENSION_NAME);
+    }
     XRLOG("runtime advertises %u extensions; colour space %s, display refresh rate %s, "
-          "recommended resolution %s",
+          "recommended resolution %s, foveation %s",
           availableCount,g.hasColorSpace?"yes":"no",g.hasDisplayRefreshRate?"yes":"no",
-          g.hasRecommendedResolution?"yes":"no");
+          g.hasRecommendedResolution?"yes":"no",g.hasFoveation?"yes":"no");
     XrInstanceCreateInfoAndroidKHR androidInfo={XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
     JNIEnv* env=static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
     JavaVM* vm=NULL; env->GetJavaVM(&vm); androidInfo.applicationVM=vm;
@@ -1431,6 +1512,18 @@ bool Initialize()
     LOAD_XR(CreateActionSpace); LOAD_XR(LocateSpace);
     LOAD_XR(SuggestInteractionProfileBindings); LOAD_XR(AttachSessionActionSets); LOAD_XR(SyncActions);
     LOAD_XR(GetActionStateBoolean); LOAD_XR(GetActionStateFloat); LOAD_XR(GetActionStateVector2f);
+    if(g.hasFoveation)
+    {
+        g.getProc(g.instance,"xrCreateFoveationProfileFB",
+                  reinterpret_cast<PFN_xrVoidFunction*>(&g.CreateFoveationProfileFB));
+        g.getProc(g.instance,"xrDestroyFoveationProfileFB",
+                  reinterpret_cast<PFN_xrVoidFunction*>(&g.DestroyFoveationProfileFB));
+        g.getProc(g.instance,"xrUpdateSwapchainFB",
+                  reinterpret_cast<PFN_xrVoidFunction*>(&g.UpdateSwapchainFB));
+        g.hasFoveation=g.CreateFoveationProfileFB && g.DestroyFoveationProfileFB &&
+                       g.UpdateSwapchainFB;
+        if(!g.hasFoveation) XRERR("foveation entry points unavailable");
+    }
     if (!CreateInputActions()) { XRERR("controller action creation failed"); return false; }
     XrSystemGetInfo si={XR_TYPE_SYSTEM_GET_INFO}; si.formFactor=XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
     if (XR_FAILED(g.GetSystem(g.instance,&si,&g.system))) { XRERR("no HMD system"); return false; }

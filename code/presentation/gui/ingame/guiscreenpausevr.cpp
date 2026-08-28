@@ -17,10 +17,42 @@
 
 namespace
 {
-const char* const RowNames[6]={"Camera","JumpCamera","IntersectNavSystem","Radar","Tutorial","VrHud"};
-const char* const Labels[6]={"Mode","Seated Mode","Turn Mode","Turn Speed","Vehicle Control","Developer Menus"};
+const char* const RowNames[7]={"Camera","JumpCamera","IntersectNavSystem","Radar","Tutorial","VrHud","Foveation"};
+const char* const Labels[7]={"Mode","Seated Mode","Turn Mode","Turn Speed","Vehicle Control","Developer Menus","Foveation"};
 const float SmoothSpeeds[5]={45.0f,90.0f,120.0f,180.0f,240.0f};
 const float SnapAngles[5]={15.0f,30.0f,45.0f,60.0f,90.0f};
+const int FoveationRow=6;
+
+// Row 3 shows a number the left/right arrows step through rather than a list
+// of named values, so it declares a single value.
+int ValueCount(int row)
+{
+    switch(row)
+    {
+        case 3: return 1;
+        case 4: return 3;
+        case FoveationRow: return 4;
+        default: return 2;
+    }
+}
+
+// Applies a row's value strings through whichever of the two text APIs suits
+// the caller: freshly created rows have to add strings, authored ones already
+// have slots to overwrite.
+template<typename SetString>
+void FillValues(int row, SetString set)
+{
+    switch(row)
+    {
+        case 0: set(0,"Original"); set(1,"VR"); break;
+        case 2: set(0,"Smooth"); set(1,"Snap"); break;
+        case 3: set(0,"120"); break;
+        case 4: set(0,"Stick"); set(1,"VR Wheel"); set(2,"Third Person"); break;
+        case FoveationRow:
+            set(0,"Off"); set(1,"Low"); set(2,"Medium"); set(3,"High"); break;
+        default: set(0,"Off"); set(1,"On"); break;
+    }
+}
 
 int Closest(const float* values,float value)
 {
@@ -41,7 +73,9 @@ CGuiScreenPauseVR::CGuiScreenPauseVR(Scrooby::Screen* screen,CGuiEntity* parent)
     m_pPage=m_pScroobyScreen->GetPage("PauseSettings");
     const bool frontendLayout=m_pPage==NULL;
     m_frontendLayout=frontendLayout;
-    m_numRows=frontendLayout?6:5;
+    // The Foveation row is only meaningful where the runtime supports it, and
+    // it is last, so leaving it out shifts nothing else.
+    m_numRows=frontendLayout?(SharOpenXR::IsFoveationAvailable()?7:6):5;
     if(frontendLayout) m_pPage=m_pScroobyScreen->GetPage("Controller");
     rAssert(m_pPage);
     Scrooby::Group* menuGroup=m_pPage->GetGroup("Menu");
@@ -80,10 +114,15 @@ CGuiScreenPauseVR::CGuiScreenPauseVR(Scrooby::Screen* screen,CGuiEntity* parent)
         }
         int styleW,styleH;
         styleLabel->GetBoundingBoxSize(styleW,styleH);
+        // Hold the authored vertical band fixed as rows are added, so an
+        // extra row tightens the spacing instead of running off the page.
+        const int firstY=135;
+        const int lastY=395;
+        const int spacing=(m_numRows>1)?((lastY-firstY)/(m_numRows-1)):0;
         for(int i=0;i<m_numRows;++i)
         {
             FeGroup* row=page->AddGroup(RowNames[i]);
-            const int y=135+i*52;
+            const int y=firstY+i*spacing;
             FeText* label=row->AddText(RowNames[i],120,0);
             label->SetBoundingBoxSize(230,styleH);
             label->SetTextStyle(style->GetTextStyleResourceId());
@@ -105,12 +144,7 @@ CGuiScreenPauseVR::CGuiScreenPauseVR(Scrooby::Screen* screen,CGuiEntity* parent)
             value->SetColour(styleLabel->GetColour());
             value->SetDisplayOutline(true);
             value->SetOutlineColour(tColour(0,0,0,192));
-            if(i==0){ value->AddHardCodedString("Original"); value->AddHardCodedString("VR"); }
-            else if(i==1){ value->AddHardCodedString("Off"); value->AddHardCodedString("On"); }
-            else if(i==2){ value->AddHardCodedString("Smooth"); value->AddHardCodedString("Snap"); }
-            else if(i==3) value->AddHardCodedString("120");
-            else if(i==4){ value->AddHardCodedString("Stick"); value->AddHardCodedString("VR Wheel"); value->AddHardCodedString("Third Person"); }
-            else { value->AddHardCodedString("Off"); value->AddHardCodedString("On"); }
+            FillValues(i,[value](int,const char* text){ value->AddHardCodedString(text); });
             row->Show();
             row->SetPosition(0,y);
             m_pRows[i]=row;
@@ -200,15 +234,10 @@ CGuiScreenPauseVR::CGuiScreenPauseVR(Scrooby::Screen* screen,CGuiEntity* parent)
             if(valueText) valueText->AddHardCodedString("Third Person");
         }
         label->SetString(0,Labels[i]);
-        if(i==0){ value->SetString(0,"Original"); value->SetString(1,"VR"); }
-        else if(i==1){ value->SetString(0,"Off"); value->SetString(1,"On"); }
-        else if(i==2){ value->SetString(0,"Smooth"); value->SetString(1,"Snap"); }
-        else if(i==3) value->SetString(0,"120");
-        else if(i==4){ value->SetString(0,"Stick"); value->SetString(1,"VR Wheel"); value->SetString(2,"Third Person"); }
-        else { value->SetString(0,"Off"); value->SetString(1,"On"); }
+        FillValues(i,[value](int slot,const char* text){ value->SetString(slot,text); });
         m_pMenu->AddMenuItem(label,value,NULL,NULL,left,right,
                              SELECTION_ENABLED|VALUES_WRAPPED|TEXT_OUTLINE_ENABLED);
-        m_pMenu->SetSelectionValueCount(i,i==4?3:((i<3 || i>4)?2:1));
+        m_pMenu->SetSelectionValueCount(i,ValueCount(i));
     }
 
     SetVrLayoutVisible(false);
@@ -271,6 +300,8 @@ void CGuiScreenPauseVR::HandleMessage(eGuiMessage message,unsigned int param1,un
             else if(param1==3 && param2<5) SharOpenXR::SetSmoothTurnSpeed(SmoothSpeeds[param2]);
             else if(param1==4) SharOpenXR::SetVehicleControlMode(static_cast<int>(param2));
             else if(param1==5) SharOpenXR::SetDeveloperMenusEnabled(param2==1);
+            else if(param1==FoveationRow)
+                SharOpenXR::SetFoveationLevel(static_cast<int>(param2));
         }
         if(m_pMenu)
         {
@@ -343,6 +374,8 @@ void CGuiScreenPauseVR::InitIntro()
     m_pMenu->SetSelectionValue(4,SharOpenXR::GetVehicleControlMode());
     if(m_frontendLayout)
         m_pMenu->SetSelectionValue(5,SharOpenXR::IsDeveloperMenusEnabled()?1:0);
+    if(m_numRows>FoveationRow)
+        m_pMenu->SetSelectionValue(FoveationRow,SharOpenXR::GetFoveationLevel());
     m_numericValues[0]=Closest(SmoothSpeeds,SharOpenXR::GetSmoothTurnSpeed());
     m_numericValues[1]=Closest(SnapAngles,SharOpenXR::GetSnapTurnAngle());
     UpdateNumericValue(3);
